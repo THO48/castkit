@@ -27,8 +27,14 @@
 | AndroidX（core/activity/lifecycle/compose/material3） | Apache-2.0 | UI 与生命周期 |
 | kotlinx-coroutines | Apache-2.0 | 并发 |
 | MediaProjection / MediaCodec（系统 API） | — | 采集与编码 |
+| [Next Player（ExoPlayer/Media3）](https://github.com/androidx/media) | 1.11.0（Google Maven） | Apache-2.0 | 本地视频播放引擎 |
+| [anilbeesetti/nextlib](https://github.com/anilbeesetti/nextlib) | `nextlib-media3ext` 1.11.0-0.15.0（Maven Central） | **GPL-3.0** | FFmpeg 软解（视频 H.264/HEVC/VP8/VP9/AV1；音频 AC3/EAC3/DTS/TrueHD/FLAC/…） |
 
-发送端**未**引入 GPL 代码；LANCast 协议与实现均为本项目自研（`docs/LANCast-v1.md`）。
+> **发送端现在也含 GPL-3.0 代码**（`nextlib-media3ext`）。发送端自身仍是本仓库自研代码，
+> 但分发带 NextLib 的 APK 时整体需按 **GPL-3.0** 处理；若将来要闭源分发，需要把 NextLib 换掉。
+> LANCast 协议与实现均为本项目自研（`docs/LANCast-v1.md`）。
+> NextLib 的 FFmpeg `.so` 按 ABI 各带一份且 AGP 默认**不压缩**打包，四个 ABI 合计约 34 MB，
+> 所以发送端 APK 从 16.8 MB 涨到 52.7 MB。
 
 ## 启动图标（两个 App 共用一套）
 

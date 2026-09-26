@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Surface
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -14,6 +15,10 @@ import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.DecoderManager
+import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.DecoderMode
+import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -53,6 +58,15 @@ data class LocalPlaybackState(
  * Media3 的 `Mp4Extractor` 是它自己用 Java 重写的实现，时间戳走防溢出的
  * `Util.scaleLargeTimestamp`，换成它之后同一台机器就能正常出画面。
  *
+ * ## 再叠一层 FFmpeg（NextLib）
+ *
+ * 换掉解封装只是解决一半。**解码器**那一侧仍可能吃不下：实测 1080i MBAFF 隔行流会被
+ * 某些硬解器**静默丢弃每一个 buffer**（`MediaCodec discarded an unknown buffer`），
+ * 同样黑屏、同样不报错。NextLib 文档明确写了 `AUTO` 只在"平台解不了这个格式"时兜底，
+ * **不会从运行期解码失败里恢复**，所以这里配了看门狗：起播若干秒没渲染出第一帧就切
+ * `DecoderMode.FFMPEG`（切换是 remap tracks without stopping，不打断播放）。
+ * 正常片源不受影响，仍然走硬解。
+ *
  * ## 这里刻意「不做」播放前预检
  *
  * 之前这里会先用 `MediaExtractor` + `MediaCodecList` 预检，按「**本机**有没有解码器」
@@ -73,10 +87,35 @@ class LocalVideoPlayer(
     private val main = Handler(Looper.getMainLooper())
     private var player: ExoPlayer? = null
 
+    /**
+     * 诊断日志同时写 logcat 和上层回调。
+     *
+     * `PlayerViewModel` 构造本类时**没有**传 onLog，所以只走回调的话这些"用了哪个解码器 /
+     * 有没有丢帧"的关键信息在真机上是完全看不到的 —— 而排查播放问题恰恰全靠它们。
+     */
+    private fun log(msg: String) {
+        Log.d(TAG, msg)
+        onLog(msg)
+    }
+
+    /** 运行时解码器选择器（NextLib）。必须与 player 一对一，且在 prepare 之前 attach。 */
+    private var decoderManager: DecoderManager? = null
+
     @Volatile
     private var surface: Surface? = null
 
     private var ticker: Runnable? = null
+    private var watchdog: Runnable? = null
+
+    /** 本次播放是否已经渲染出过第一帧。 */
+    private var firstFrameRendered = false
+
+    /** 0 = 还在硬解；1 = 已经切到 FFmpeg。 */
+    private var fallbackStage = 0
+
+    /** 累计丢帧：软解路径没有 MediaCodec 的统计日志，只能自己数。 */
+    private var droppedFramesTotal = 0
+    private var droppedFramesLogged = 0
 
     fun setSurface(s: Surface?) {
         surface = s
@@ -86,23 +125,29 @@ class LocalVideoPlayer(
     fun play(uri: Uri, title: String) {
         main.post {
             releaseInternal()
+            firstFrameRendered = false
+            fallbackStage = 0
             _state.value = LocalPlaybackState(uri = uri, title = title, buffering = true)
-            onLog("本地播放: $uri")
+            log("本地播放: $uri")
+
+            val manager = DecoderManager()
+            decoderManager = manager
+            val renderersFactory = NextRenderersFactory(context)
+                .setDecoderManager(manager)
+                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
 
             val p = try {
-                ExoPlayer.Builder(context)
-                    .setRenderersFactory(
-                        DefaultRenderersFactory(context)
-                            .setEnableDecoderFallback(true),
-                    )
-                    .build()
+                ExoPlayer.Builder(context).setRenderersFactory(renderersFactory).build()
             } catch (e: Throwable) {
-                onLog("ExoPlayer 创建失败: ${e.message}")
+                log("ExoPlayer 创建失败: ${e.message}")
                 _state.value = _state.value.copy(error = e.message ?: "播放器创建失败", buffering = false)
+                decoderManager = null
                 return@post
             }
             player = p
             try {
+                // 必须在 prepare 之前 attach；ExoPlayer 默认就是 DefaultTrackSelector，满足前提
+                runCatching { manager.attach(p) }
                 p.setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(C.USAGE_MEDIA)
@@ -128,6 +173,8 @@ class LocalVideoPlayer(
                                         ?.coerceAtLeast(0) ?: 0L,
                                 )
                                 startTicker()
+                                // 就绪了才谈得上「有没有画面」，看门狗从这时开始计时
+                                scheduleWatchdog(NO_FRAME_FALLBACK_MS)
                             }
 
                             Player.STATE_ENDED -> {
@@ -147,6 +194,14 @@ class LocalVideoPlayer(
                         if (isPlaying) startTicker()
                     }
 
+                    override fun onRenderedFirstFrame() {
+                        firstFrameRendered = true
+                        cancelWatchdog()
+                        // 报告**真实**用的解码器，而不是"看门狗有没有触发" ——
+                        // 有些片源是 Media3 自己就路由到 FFmpeg 的，看门狗根本没机会触发
+                        log("画面已出（${decoderModeLabel()}）")
+                    }
+
                     override fun onVideoSizeChanged(videoSize: VideoSize) {
                         if (videoSize.width <= 0 || videoSize.height <= 0) return
                         // MediaPlayer 的 onVideoSizeChanged 给的是**显示**尺寸，
@@ -160,7 +215,7 @@ class LocalVideoPlayer(
 
                     override fun onPlayerError(error: PlaybackException) {
                         val friendly = friendlyMessage(error)
-                        onLog("本地播放失败 ${error.errorCodeName}: $friendly")
+                        log("本地播放失败 ${error.errorCodeName}: $friendly")
                         _state.value = _state.value.copy(
                             error = friendly,
                             playing = false,
@@ -169,11 +224,21 @@ class LocalVideoPlayer(
                         stopTicker()
                     }
                 })
+                // 软解路径没有 MediaCodec 的 video-debug-dec 统计，只能自己数丢帧
+                p.addAnalyticsListener(object : AnalyticsListener {
+                    override fun onDroppedVideoFrames(
+                        eventTime: AnalyticsListener.EventTime,
+                        droppedFrames: Int,
+                        elapsedMs: Long,
+                    ) {
+                        droppedFramesTotal += droppedFrames
+                    }
+                })
                 p.setMediaItem(MediaItem.fromUri(uri))
                 p.prepare()
                 p.playWhenReady = true
             } catch (e: Throwable) {
-                onLog("本地播放加载失败: ${e.message}")
+                log("本地播放加载失败: ${e.message}")
                 _state.value = _state.value.copy(error = e.message ?: "加载失败", buffering = false)
                 releaseInternal()
             }
@@ -226,13 +291,78 @@ class LocalVideoPlayer(
 
     private fun releaseInternal() {
         stopTicker()
+        cancelWatchdog()
+        firstFrameRendered = false
+        fallbackStage = 0
+        droppedFramesTotal = 0
+        droppedFramesLogged = 0
         runCatching { player?.setVideoSurface(null) }
+        // 必须在 release 之前 detach
+        runCatching { decoderManager?.detach() }
+        decoderManager = null
         runCatching { player?.release() }
         player = null
     }
 
+    /**
+     * 「起播了但一直没画面」的看门狗。
+     *
+     * 硬解器吃不下某些码流时**不会报错**，只是静默丢弃 buffer（1080i MBAFF 实测就是
+     * `MediaCodec discarded an unknown buffer`），而 Media3 的 `AUTO` 只在"格式不被支持"
+     * 时兜底，管不到这种运行期失败。
+     */
+    private fun scheduleWatchdog(delayMs: Long) {
+        cancelWatchdog()
+        val r = object : Runnable {
+            override fun run() {
+                watchdog = null
+                val p = player ?: return
+                if (firstFrameRendered) return
+                if (p.playbackState != Player.STATE_READY) {
+                    scheduleWatchdog(NO_FRAME_FALLBACK_MS)
+                    return
+                }
+                if (fallbackStage == 0) {
+                    fallbackStage = 1
+                    log("硬解 ${NO_FRAME_FALLBACK_MS / 1000} 秒内没出画面，切换 FFmpeg 软解重试")
+                    runCatching { decoderManager?.selectVideoDecoder(DecoderMode.FFMPEG) }
+                        .onFailure { log("切换 FFmpeg 失败: ${it.message}") }
+                    scheduleWatchdog(NO_FRAME_GIVEUP_MS)
+                } else {
+                    log("FFmpeg 软解仍然没有画面，判定本机解不了这个片源")
+                    _state.value = _state.value.copy(
+                        error = "本机解不了这个视频（硬解软解都失败）",
+                        playing = false,
+                        buffering = false,
+                    )
+                    stopTicker()
+                }
+            }
+        }
+        watchdog = r
+        main.postDelayed(r, delayMs)
+    }
+
+    private fun cancelWatchdog() {
+        watchdog?.let { main.removeCallbacks(it) }
+        watchdog = null
+    }
+
+    /** 当前实际生效的解码类别；未知/还没初始化时返回 null。 */
+    private fun activeVideoMode(): DecoderMode? =
+        runCatching { decoderManager?.activeVideoMode }.getOrNull()
+
+    private fun decoderModeLabel(): String = when (activeVideoMode()) {
+        DecoderMode.HARDWARE -> "硬解"
+        DecoderMode.SOFTWARE -> "系统软解"
+        DecoderMode.FFMPEG -> "FFmpeg 软解"
+        DecoderMode.AUTO -> "自动"
+        null -> if (fallbackStage > 0) "FFmpeg 软解（回退）" else "未知解码器"
+    }
+
     private fun startTicker() {
         stopTicker()
+        var ticks = 0L
         val r = object : Runnable {
             override fun run() {
                 val p = player
@@ -243,6 +373,13 @@ class LocalVideoPlayer(
                             durationMs = p.duration.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0)
                                 ?: _state.value.durationMs,
                         )
+                    }
+                    // 每 5 秒把新增丢帧报一次（只在真丢了才报）
+                    ticks++
+                    if (ticks % (DROP_REPORT_MS / TICK_MS) == 0L && droppedFramesTotal > droppedFramesLogged) {
+                        val delta = droppedFramesTotal - droppedFramesLogged
+                        droppedFramesLogged = droppedFramesTotal
+                        log("解码跟不上：最近 5 秒丢 $delta 帧（累计 $droppedFramesTotal，${decoderModeLabel()}）")
                     }
                 }
                 main.postDelayed(this, TICK_MS)
@@ -280,6 +417,16 @@ class LocalVideoPlayer(
     }
 
     private companion object {
+        const val TAG = "LocalVideoPlayer"
         const val TICK_MS = 500L
+
+        /** 每隔多久把新增丢帧汇总报一次。 */
+        const val DROP_REPORT_MS = 5000L
+
+        /** 起播后多久还没渲染出第一帧就判定硬解器吃不下（要留出起播缓冲的余量）。 */
+        const val NO_FRAME_FALLBACK_MS = 4000L
+
+        /** 切到 FFmpeg 之后再等多久还没画面就放弃（软解起播比硬解慢）。 */
+        const val NO_FRAME_GIVEUP_MS = 8000L
     }
 }

@@ -94,9 +94,10 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel)
     implementation(libs.kotlinx.coroutines)
     // CastKit: 本地播放引擎（见 media/LocalVideoPlayer.kt 顶部说明）。
-    // 只引 ExoPlayer 本体，不引 FFmpeg —— 发送端只做"预览"，投屏走的是字节转发不解码，
-    // 而 NextLib 的 FFmpeg .so 要按 ABI 各带一份（本工程出 4 个 ABI，约 +24 MB）。
+    // ExoPlayer 解决"解封装"（系统 MPEG4Extractor 遇到病态时间基会弃轨）；
+    // NextLib 的 FFmpeg 解决"解码器吃不下"（隔行片源会被硬解器静默丢帧）。
     implementation(libs.media3.exoplayer)
+    implementation(libs.nextlib.media3ext)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

@@ -9,8 +9,11 @@ coroutines = "1.9.0"
 # 官方 Compose Preview 截图测试插件（AGP 8.9.x 对应分支）。
 # 版本号必须与 AGP 匹配，插件自己会校验；0.0.1-alpha11 是 AGP 8.9 那条线的版本。
 screenshot = "0.0.1-alpha11"
-# 与接收端保持一致；NextLib 的版本号规则要求媒体库版本对齐（发送端目前只用 ExoPlayer 本体）
+# 与接收端保持一致；NextLib 的版本号规则要求媒体库版本对齐
 media3 = "1.11.0"
+# NextLib：给 Media3 补 FFmpeg 软解（官方 media3-decoder-ffmpeg 只有音频）。
+# 版本号规则是 `<它对应的 media3 版本>-<nextlib 自己的版本>`。
+nextlib = "1.11.0-0.15.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "core-ktx" }
@@ -34,6 +37,8 @@ kotlinx-coroutines = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutin
 # 本地播放引擎：系统 MediaPlayer 在解封装环节没有自主权（安卓自带的 MPEG4Extractor
 # 遇到病态时间基会直接弃轨），换成 Media3 之后用它的 Mp4Extractor 才播得出来。
 media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
+# FFmpeg 软解（视频：H.264/HEVC/VP8/VP9/AV1；音频：AC3/EAC3/DTS/TrueHD/FLAC/…）
+nextlib-media3ext = { group = "io.github.anilbeesetti", name = "nextlib-media3ext", version.ref = "nextlib" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
