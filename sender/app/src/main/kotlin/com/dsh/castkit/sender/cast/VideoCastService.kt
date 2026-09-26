@@ -16,6 +16,7 @@ import com.dsh.castkit.sender.CastKitApp
 import com.dsh.castkit.sender.MainActivity
 import com.dsh.castkit.sender.Prefs
 import com.dsh.castkit.sender.R
+import com.dsh.castkit.sender.media.PlayabilityChecker
 import com.dsh.castkit.sender.net.LanCast
 import com.dsh.castkit.sender.net.LanCastClient
 import com.dsh.castkit.sender.net.LanCastFileServer
@@ -97,6 +98,18 @@ class VideoCastService : Service() {
     }
 
     private fun startServing(uri: Uri) {
+        // 投屏前预检：接收端走的是同一套系统解码器，发送端解不了的格式（WMV/RMVB 等）它同样解不了。
+        // 在发送端就把话说清楚，用户才不会以为是网络问题。
+        val verdict = PlayabilityChecker.check(this, uri)
+        Log.i(TAG, "预检：$verdict")
+        PlayabilityChecker.blockReason(verdict)?.let { msg ->
+            Log.w(TAG, "预检判定不可播，放弃投送：$msg")
+            CastBus.update {
+                it.copy(phase = CastPhase.ERROR, mode = CastMode.VIDEO, message = msg)
+            }
+            stopSelf()
+            return
+        }
         val src = LanCastFileServer.describe(this, uri)
         source = src
         val srv = LanCastFileServer(this)

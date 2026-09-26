@@ -58,55 +58,71 @@ class LocalVideoPlayer(
             releaseInternal()
             _state.value = LocalPlaybackState(uri = uri, title = title, buffering = true)
             onLog("本地播放: $uri")
-            val mp = MediaPlayer()
-            player = mp
-            try {
-                mp.setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
-                        .build(),
+            // 「安卓根本没有这个格式的解码器」（WMV/RMVB 等）要在建 MediaPlayer 之前就说清楚，
+            // 否则用户只会看到一个 error (1, -2147483648)。预检要读文件头，放后台线程做。
+            Thread {
+                val verdict = PlayabilityChecker.check(context, uri)
+                main.post { if (_state.value.uri == uri) startPlayback(uri, verdict) }
+            }.apply { isDaemon = true; name = "castkit-precheck"; start() }
+        }
+    }
+
+    /** 预检通过（或只是没判准）之后真正起播。 */
+    private fun startPlayback(uri: Uri, verdict: Playability) {
+        PlayabilityChecker.logMessage(verdict)?.let { onLog(it) }
+        PlayabilityChecker.blockReason(verdict)?.let { msg ->
+            onLog("预检未通过: $msg")
+            _state.value = _state.value.copy(error = msg, buffering = false)
+            return
+        }
+        val mp = MediaPlayer()
+        player = mp
+        try {
+            mp.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                    .build(),
+            )
+            mp.setSurface(surface)
+            mp.setDataSource(context, uri)
+            mp.setOnPreparedListener { p ->
+                _state.value = _state.value.copy(
+                    buffering = false,
+                    playing = true,
+                    durationMs = p.duration.toLong().coerceAtLeast(0),
                 )
-                mp.setSurface(surface)
-                mp.setDataSource(context, uri)
-                mp.setOnPreparedListener { p ->
-                    _state.value = _state.value.copy(
-                        buffering = false,
-                        playing = true,
-                        durationMs = p.duration.toLong().coerceAtLeast(0),
-                    )
-                    runCatching { p.start() }
-                    startTicker()
-                }
-                mp.setOnVideoSizeChangedListener { _, w, h ->
-                    _state.value = _state.value.copy(width = w, height = h)
-                }
-                mp.setOnInfoListener { _, what, _ ->
-                    when (what) {
-                        MediaPlayer.MEDIA_INFO_BUFFERING_START ->
-                            _state.value = _state.value.copy(buffering = true)
-                        MediaPlayer.MEDIA_INFO_BUFFERING_END,
-                        MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START ->
-                            _state.value = _state.value.copy(buffering = false)
-                    }
-                    false
-                }
-                mp.setOnCompletionListener {
-                    _state.value = _state.value.copy(playing = false, positionMs = _state.value.durationMs)
-                    stopTicker()
-                }
-                mp.setOnErrorListener { _, what, extra ->
-                    val msg = "播放失败 what=$what extra=$extra"
-                    onLog(msg)
-                    _state.value = _state.value.copy(error = msg, playing = false, buffering = false)
-                    true
-                }
-                mp.prepareAsync()
-            } catch (e: Throwable) {
-                onLog("本地播放加载失败: ${e.message}")
-                _state.value = _state.value.copy(error = e.message ?: "加载失败", buffering = false)
-                releaseInternal()
+                runCatching { p.start() }
+                startTicker()
             }
+            mp.setOnVideoSizeChangedListener { _, w, h ->
+                _state.value = _state.value.copy(width = w, height = h)
+            }
+            mp.setOnInfoListener { _, what, _ ->
+                when (what) {
+                    MediaPlayer.MEDIA_INFO_BUFFERING_START ->
+                        _state.value = _state.value.copy(buffering = true)
+                    MediaPlayer.MEDIA_INFO_BUFFERING_END,
+                    MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START ->
+                        _state.value = _state.value.copy(buffering = false)
+                }
+                false
+            }
+            mp.setOnCompletionListener {
+                _state.value = _state.value.copy(playing = false, positionMs = _state.value.durationMs)
+                stopTicker()
+            }
+            mp.setOnErrorListener { _, what, extra ->
+                val msg = "播放失败 what=$what extra=$extra"
+                onLog(msg)
+                _state.value = _state.value.copy(error = msg, playing = false, buffering = false)
+                true
+            }
+            mp.prepareAsync()
+        } catch (e: Throwable) {
+            onLog("本地播放加载失败: ${e.message}")
+            _state.value = _state.value.copy(error = e.message ?: "加载失败", buffering = false)
+            releaseInternal()
         }
     }
 

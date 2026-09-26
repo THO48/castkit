@@ -48,6 +48,28 @@ Thumbs.db
 *.log
 *.hprof
 
+# ---- 测试用媒体文件 ----
+# 本地压测/复现播放问题时临时丢在仓库根目录的视频，绝不能进版本库
+# （单个可达 GB 级，且内容未必适合公开）。上面这些 *.mp4 一度没被忽略，
+# 只要有人跑一次 `git add -A` 就会被提交进公开仓库。
+*.mp4
+*.mkv
+*.avi
+*.wmv
+*.mov
+*.flv
+*.ts
+*.m2ts
+*.webm
+*.rmvb
+*.rm
+*.m4v
+*.mpg
+*.mpeg
+*.3gp
+# 注意：这里不需要为 third_party 下的 FFmpeg 测试样本加 `!` 反选——
+# `third_party/` 整个目录已被排除，git 无法再往里反选文件。那些样本本来也不进仓库。
+
 # ---- Python（tools/ 下的辅助脚本）----
 __pycache__/
 *.pyc

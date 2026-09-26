@@ -176,7 +176,16 @@ class LanCastFileServer(private val context: Context) {
         val out = BufferedOutputStream(socket.getOutputStream(), 1 shl 16)
 
         if (total <= 0) {
-            // 拿不到大小（极少数 provider）：退化成一次性整文件响应
+            // 拿不到大小 -> 无法提供 Range。这条路上**只有 faststart（moov 在前）的文件能播**：
+            // 接收端的 MediaPlayer 会发 `Range: bytes=<末尾偏移>-` 去回取 moov，
+            // 拿不到就是 error(1, -2147483648) / MEDIA_ERROR_UNKNOWN，表现为「这个视频投不了屏」。
+            // 正常情况下 describe() 已经用 fd.statSize 兜住了，走到这里说明确实拿不到大小，
+            // 必须留下明显日志，别再让它悄无声息地失败。
+            Log.w(
+                TAG,
+                "拿不到文件大小（${src.uri}），本次只能无 Range 顺序下发；" +
+                    "moov 在文件末尾的 MP4 会因此播放失败",
+            )
             out.write(
                 ("HTTP/1.1 200 OK\r\nContent-Type: ${src.mime}\r\n" +
                     "Accept-Ranges: none\r\nConnection: close\r\n\r\n")
@@ -215,14 +224,8 @@ class LanCastFileServer(private val context: Context) {
         out.flush()
         if (method == "HEAD") return
 
-        val input = try {
-            context.contentResolver.openInputStream(src.uri)
-        } catch (e: Throwable) {
-            Log.w(TAG, "打开视频失败: ${e.message}")
-            null
-        } ?: return
+        val input = openAt(src, start) ?: return
         input.use { stream ->
-            if (start > 0) skipFully(stream, start)
             val buf = ByteArray(1 shl 16)
             var remaining = length
             while (remaining > 0 && running.get()) {
@@ -294,6 +297,49 @@ class LanCastFileServer(private val context: Context) {
         }
     }
 
+    /**
+     * 打开文件并把读指针定位到 [offset]。
+     *
+     * 为什么不能只靠 `openInputStream` + `skipFully`：接收端读 moov 在末尾的 MP4 时会发
+     * `Range: bytes=<末尾偏移>-`，偏移量可能到 GB 级。`InputStream.skip` 在 provider 返回的
+     * 管道流上是**靠读取丢弃**实现的，跳 1.4 GB 会让接收端等到超时。
+     * 文件描述符可以真正 lseek，所以优先走它；只有它不可用时才退回 skip。
+     */
+    private fun openAt(src: Source, offset: Long): InputStream? {
+        if (offset > 0) {
+            try {
+                val pfd = context.contentResolver.openFileDescriptor(src.uri, "r")
+                if (pfd != null) {
+                    val fis = java.io.FileInputStream(pfd.fileDescriptor)
+                    try {
+                        fis.channel.position(offset)
+                    } catch (e: Throwable) {
+                        // 不可 seek（管道/FIFO）：关掉，退回下面的普通流 + skip
+                        runCatching { fis.close() }
+                        runCatching { pfd.close() }
+                        throw e
+                    }
+                    return object : java.io.FilterInputStream(fis) {
+                        override fun close() {
+                            runCatching { super.close() }
+                            runCatching { pfd.close() }
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                Log.d(TAG, "openFileDescriptor 定位失败，退回 skip：${e.message}")
+            }
+        }
+        val stream = try {
+            context.contentResolver.openInputStream(src.uri)
+        } catch (e: Throwable) {
+            Log.w(TAG, "打开视频失败: ${e.message}")
+            null
+        } ?: return null
+        if (offset > 0) skipFully(stream, offset)
+        return stream
+    }
+
     companion object {
         private const val TAG = "LanCastFileServer"
         const val DEFAULT_PORT = 8130
@@ -350,18 +396,39 @@ class LanCastFileServer(private val context: Context) {
                 Log.w(TAG, "读取文件信息失败: ${e.message}")
             }
             val mime = context.contentResolver.getType(uri) ?: guessMime(name)
+            // OpenableColumns.SIZE 并非所有 provider 都返回（部分云盘/U 盘/第三方相册给空或 -1）。
+            // 拿不到大小就只能退化成「无 Range」模式，而 moov 在文件末尾的 MP4（非 faststart，
+            // 从网上下载的视频大量如此）必须靠 Range 回取尾部索引才能播 —— 会直接播放失败。
+            // 所以这里再问文件描述符要一次真实大小，它覆盖 MediaStore / SAF / file:// 的绝大多数情况。
+            if (size <= 0) {
+                size = statSize(context, uri)
+                if (size > 0) Log.i(TAG, "OpenableColumns.SIZE 不可用，改用 fd.statSize=$size（$name）")
+            }
             return Source(uri, size, name, mime)
+        }
+
+        /** 直接问文件描述符要真实大小；拿不到返回 -1。 */
+        fun statSize(context: Context, uri: Uri): Long = try {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
+        } catch (e: Throwable) {
+            Log.w(TAG, "读取文件大小失败: ${e.message}")
+            -1L
         }
 
         private fun guessMime(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
             "mp4", "m4v" -> "video/mp4"
             "mkv" -> "video/x-matroska"
             "webm" -> "video/webm"
-            "ts" -> "video/mp2t"
+            "ts", "m2ts" -> "video/mp2t"
             "mov" -> "video/quicktime"
             "avi" -> "video/x-msvideo"
             "flv" -> "video/x-flv"
             "3gp" -> "video/3gpp"
+            // 下面这些安卓平台**没有解码器**（见 README「支持的格式」）。照样给出正确的 MIME，
+            // 是为了让接收端的报错落在"格式不支持"而不是"Content-Type 不认识"上。
+            "wmv", "asf" -> "video/x-ms-wmv"
+            "mpg", "mpeg", "vob" -> "video/mpeg"
+            "rm", "rmvb" -> "application/vnd.rn-realmedia-vbr"
             else -> "application/octet-stream"
         }
     }
