@@ -118,7 +118,6 @@ class LocalVideoPlayer(
     // 策略：ExoPlayer 优先（已实测的路径不动），只有它报「容器/编码不认识」时才切过来。
     // ------------------------------------------------------------------
 
-    private var libVlc: LibVLC? = null
     private var vlcPlayer: VlcMediaPlayer? = null
 
     /** 本次播放是否已经交给过 libVLC（避免来回切）。 */
@@ -371,9 +370,8 @@ class LocalVideoPlayer(
     fun release() {
         main.post {
             releaseInternal()
-            // 页面销毁才把 LibVLC 实例也放掉（它创建很贵，一次播放内要复用）
-            runCatching { libVlc?.release() }
-            libVlc = null
+            // libVLC 实例是进程级共享的（VlcHolder），这里**不能**放掉它 ——
+            // 列表页的媒体信息探测和缩略图抽帧还在用它。
             _state.value = LocalPlaybackState()
         }
     }
@@ -439,10 +437,8 @@ class LocalVideoPlayer(
         runCatching { player?.release() }
         player = null
 
-        val vlc = try {
-            libVlc ?: LibVLC(context, VLC_ARGS).also { libVlc = it }
-        } catch (e: Throwable) {
-            log("libVLC 初始化失败: ${e.message}")
+        val vlc = VlcHolder.get(context) ?: run {
+            log("libVLC 初始化失败")
             _state.value = _state.value.copy(error = "本机无法播放该视频", buffering = false)
             return
         }
@@ -787,18 +783,5 @@ class LocalVideoPlayer(
 
         /** 重挂渲染面之后再等多久还没画面就判定放不出来。 */
         const val VLC_NO_VOUT_GIVEUP_MS = 6000L
-
-        /**
-         * libVLC 兜底内核的启动参数。与接收端保持一致。
-         * `--verbose=2` 是排查期留的，libVLC 的内部日志会进 logcat 的 `VLC` 标签；
-         * 稳定之后可以降到 `--verbose=1` 或删掉。
-         */
-        val VLC_ARGS = arrayListOf(
-            "--verbose=2",
-            "--no-drop-late-frames",
-            "--no-skip-frames",
-            "--network-caching=1500",
-            "--file-caching=1500",
-        )
     }
 }

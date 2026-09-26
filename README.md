@@ -16,17 +16,18 @@ Android + CastKit 发送端 ──HTTP 原始视频文件───────�
 
 ## 下载
 
-最新版 **v1.0.2**：
+最新版 **v1.0.3**：
 
 | 文件 | 装在 | 大小 |
 |---|---|---|
-| [`CastKit-Sender-1.0.1-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.2/CastKit-Sender-1.0.1-debug.apk) | **发送端** —— 要投出去的设备 | 239.3 MB |
-| [`CastKit-Receiver-0.0.31-castkit.3-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.2/CastKit-Receiver-0.0.31-castkit.3-debug.apk) | **接收端** —— 显示画面的设备 | 82.0 MB |
+| [`CastKit-Sender-1.0.2-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.3/CastKit-Sender-1.0.2-debug.apk) | **发送端** —— 要投出去的设备 | 239.3 MB |
+| [`CastKit-Receiver-0.0.31-castkit.3-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.3/CastKit-Receiver-0.0.31-castkit.3-debug.apk) | **接收端** —— 显示画面的设备 | 82.0 MB |
 
 全部版本见 [Releases](https://github.com/THO48/castkit/releases)。
 
 | 版本 | 要点 |
 |---|---|
+| [v1.0.3](https://github.com/THO48/castkit/releases/tag/v1.0.3) | 发送端文件列表：**WMV/AVI/MPG 这类片源补上时长、分辨率与缩略图**（系统解析不了的交给 libVLC） |
 | [v1.0.2](https://github.com/THO48/castkit/releases/tag/v1.0.2) | 两端都补上 libVLC 兜底内核：**WMV/ASF 现在发送端能放、也能投** |
 | [v1.0.1](https://github.com/THO48/castkit/releases/tag/v1.0.1) | 接收端换成实心 `cast` 图标、改为从源码完整重建、包体 37.6→30.2 MB |
 | [v1.0.0](https://github.com/THO48/castkit/releases/tag/v1.0.0) | 首发：发送端 UI 全面迁移 Material 3 |
@@ -188,6 +189,11 @@ bash tools/install-apk.sh receiver # 导出到 Download/DSHA 供安装
 - **缩略图三级缓存**：内存 LRU → 磁盘缓存（`cacheDir/thumb_cache`，800 张上限、LRU 淘汰）→ 现抽帧；
   同时**限制并发解码为 2**、条目滚出屏幕即中断抽帧（`CancellationSignal`），所以快速拖动不会因
   一秒内冒出十几个抽帧任务而卡顿。
+- **系统解析不了的片源也有时长和预览图**：安卓自带的解封装器不认识 ASF，`.wmv` 在媒体库里
+  `duration`/`width`/`height` 干脆是 `NULL`（`.mpg` 是有分辨率没时长），缩略图也生成不出来。
+  这类条目会按需交给 libVLC 补：时长/分辨率先走 `Media.parse()`，拿不到再起一个"只探测"的播放器；
+  预览图则让 libVLC 把画面渲染进 `ImageReader` 的 surface 再取像素。
+  结果都在内存里缓存，判定是确定性的，不会反复重探。
 - **打开速度**：媒体库查询（快）与 `.nomedia` 遍历（慢）分两段——先出内容，再在后台补扫描；
   `.nomedia` 结果落磁盘缓存（5 分钟有效，手动「刷新」强制重扫），另有一份进程内缓存供切页复用。
   所以重开应用基本是"秒出"，不会每次都等全盘扫描。

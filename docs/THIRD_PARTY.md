@@ -30,7 +30,7 @@
 | MediaProjection / MediaCodec（系统 API） | — | 采集与编码 |
 | [Next Player（ExoPlayer/Media3）](https://github.com/androidx/media) | 1.11.0（Google Maven） | Apache-2.0 | 本地视频播放引擎 |
 | [anilbeesetti/nextlib](https://github.com/anilbeesetti/nextlib) | `nextlib-media3ext` 1.11.0-0.15.0（Maven Central） | **GPL-3.0** | FFmpeg 软解（视频 H.264/HEVC/VP8/VP9/AV1；音频 AC3/EAC3/DTS/TrueHD/FLAC/…） |
-| [libVLC（VLC for Android）](https://code.videolan.org/videolan/vlc-android) | `org.videolan.android:libvlc-all` 3.7.6（Maven Central） | **LGPL-2.1** | 兜底内核：给本地播放补上 ASF/WMV 解封装（与接收端同一版本） |
+| [libVLC（VLC for Android）](https://code.videolan.org/videolan/vlc-android) | `org.videolan.android:libvlc-all` 3.7.6（Maven Central） | **LGPL-2.1** | 兜底内核：给本地播放补上 ASF/WMV 解封装；同时给文件列表补系统拿不到的时长、分辨率与缩略图（与接收端同一版本） |
 
 > **发送端现在也含 GPL-3.0 代码**（`nextlib-media3ext`）。发送端自身仍是本仓库自研代码，
 > 但分发带 NextLib 的 APK 时整体需按 **GPL-3.0** 处理；若将来要闭源分发，需要把 NextLib 换掉。

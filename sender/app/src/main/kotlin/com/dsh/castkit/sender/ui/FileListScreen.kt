@@ -57,6 +57,7 @@ import com.dsh.castkit.sender.media.FolderEntry
 import com.dsh.castkit.sender.media.VideoDurations
 import com.dsh.castkit.sender.media.VideoItem
 import com.dsh.castkit.sender.media.VideoLibrary
+import com.dsh.castkit.sender.media.VideoProbeInfo
 import com.dsh.castkit.sender.media.VideoSortField
 import com.dsh.castkit.sender.media.VideoThumbnails
 import com.dsh.castkit.sender.ui.components.CastKitTopBar
@@ -358,15 +359,25 @@ private fun LibraryVideoTile(
         value = VideoThumbnails.load(context, video.uri)
     }
 
-    // 不在媒体库里的条目（.nomedia）扫描时可能没探到时长，这里按需补
-    val duration by produceState(initialValue = video.durationMs, video.key) {
-        value = if (video.durationMs > 0) video.durationMs else VideoDurations.resolve(video.uri)
+    // 时长与分辨率：媒体库里没有的（典型是 .wmv/.asf —— 系统解封装器不认识 ASF，
+    // MediaStore 里这几个字段就是 NULL）按需探一次，探测源与缓存都在 VideoDurations 里。
+    val info by produceState(
+        initialValue = VideoDurations.cachedInfo(video.uri)
+            ?: VideoProbeInfo(video.durationMs, video.width, video.height),
+        video.key,
+    ) {
+        if (value.durationMs <= 0 || value.width <= 0 || value.height <= 0) {
+            value = VideoDurations.resolveInfo(context, video.uri)
+        }
     }
+    val duration = info.durationMs
+    val width = if (info.width > 0) info.width else video.width
+    val height = if (info.height > 0) info.height else video.height
 
     val meta = buildString {
         append(VideoLibrary.formatDuration(duration))
-        if (video.width > 0 && video.height > 0) {
-            append(" · ${video.width}×${video.height}")
+        if (width > 0 && height > 0) {
+            append(" · ${width}×${height}")
         }
         val size = VideoLibrary.formatSize(video.sizeBytes)
         if (size.isNotEmpty()) append(" · $size")

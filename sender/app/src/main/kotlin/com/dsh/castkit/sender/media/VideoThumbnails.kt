@@ -81,14 +81,28 @@ object VideoThumbnails {
                 return@withPermit fromDisk
             }
 
-            val bitmap = withContext(Dispatchers.IO) { generate(context, uri, signal) } ?: return@withPermit null
+            val bitmap = generate(context, uri, signal) ?: return@withPermit null
             cache.put(key, bitmap)
             withContext(Dispatchers.IO) { writeToDisk(context, key, bitmap) }
             bitmap
         }
     }
 
-    private fun generate(context: Context, uri: Uri, signal: CancellationSignal): Bitmap? = try {
+    /**
+     * 抽一帧当缩略图。
+     *
+     * 先走系统那套（媒体库缩略图 / `ThumbnailUtils`），**失败才交给 libVLC** ——
+     * 安卓自带的解封装器不认识 ASF，`.wmv` 这类片源在系统这条路永远拿不到图，
+     * 而 libVLC 自带的 FFmpeg 认识。反过来，普通片源走系统路径又快又省，
+     * 所以顺序不能反。
+     */
+    private suspend fun generate(context: Context, uri: Uri, signal: CancellationSignal): Bitmap? {
+        withContext(Dispatchers.IO) { systemThumbnail(context, uri, signal) }?.let { return it }
+        if (signal.isCanceled) return null
+        return VlcMediaInfo.frame(context, uri, THUMB_W, THUMB_H)
+    }
+
+    private fun systemThumbnail(context: Context, uri: Uri, signal: CancellationSignal): Bitmap? = try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val size = Size(THUMB_W, THUMB_H)
             if (uri.scheme == "file") {
@@ -150,41 +164,77 @@ object VideoThumbnails {
 }
 
 /**
- * 文件时长（只用于不在媒体库里的 file:// 条目）。
+ * 视频时长与分辨率（按需探测，带缓存）。
  *
- * 同样限制并发：`MediaMetadataRetriever` 比缩略图更重，快速拖动时不能一拥而上。
+ * 两级来源：
+ *  1. 系统 `MediaMetadataRetriever` —— 快，覆盖绝大多数片源，`content://` / `file://` 都吃；
+ *  2. libVLC `Media.parse()` —— 只在第 1 级拿不到东西时才用。
+ *     **这是 `.wmv`/`.asf` 唯一的出路**：安卓自带解封装器不认识 ASF，
+ *     媒体库里这几个字段干脆是 `NULL`，`MediaMetadataRetriever` 也只会返回空。
+ *
+ * 结果（包括"确实拿不到"）都会缓存：判定是确定性的，重试只是白烧 CPU。
+ * 探测本身也要限并发 —— `MediaMetadataRetriever` 不轻，libVLC 解析还要过全局锁。
  */
 object VideoDurations {
 
     private const val MAX_CONCURRENT = 2
 
-    private val cache = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, VideoProbeInfo>()
     private val limiter = Semaphore(MAX_CONCURRENT)
 
-    fun cached(uri: Uri): Long = cache[uri.toString()] ?: 0L
+    /** 只要时长（给 `.nomedia` 结果落盘缓存用）。 */
+    fun cached(uri: Uri): Long = cache[uri.toString()]?.durationMs ?: 0L
 
-    suspend fun resolve(uri: Uri): Long {
-        if (uri.scheme != "file") return 0L
+    /** 组合期同步命中缓存，避免先闪一下 `--:--`。 */
+    fun cachedInfo(uri: Uri): VideoProbeInfo? = cache[uri.toString()]
+
+    suspend fun resolveInfo(context: Context, uri: Uri): VideoProbeInfo {
         val key = uri.toString()
         cache[key]?.let { return it }
-        val path = uri.path ?: return 0L
         return limiter.withPermit {
             cache[key]?.let { return@withPermit it }
-            val duration = withContext(Dispatchers.IO) {
-                try {
-                    val r = MediaMetadataRetriever()
-                    try {
-                        r.setDataSource(path)
-                        r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                    } finally {
-                        runCatching { r.release() }
-                    }
-                } catch (_: Throwable) {
-                    0L
-                }
+
+            val system = withContext(Dispatchers.IO) { systemProbe(context, uri) }
+            // 系统这套齐全（时长 + 分辨率都有）就到此为止 —— 绝大多数片源走这里。
+            // 注意不能只看"系统返回了没有"：实测 `.mpg` 是**有分辨率、没时长**，
+            // 这种半全的结果照样得让 libVLC 补一次，否则时长还是 `--:--`。
+            val info = if (system != null && system.durationMs > 0 && system.width > 0 && system.height > 0) {
+                system
+            } else {
+                val vlc = VlcMediaInfo.probe(context, uri)
+                VideoProbeInfo(
+                    durationMs = system?.durationMs?.takeIf { it > 0 } ?: vlc?.durationMs ?: 0L,
+                    width = system?.width?.takeIf { it > 0 } ?: vlc?.width ?: 0,
+                    height = system?.height?.takeIf { it > 0 } ?: vlc?.height ?: 0,
+                )
             }
-            if (duration > 0) cache[key] = duration
-            duration
+            cache[key] = info
+            info
+        }
+    }
+
+    private fun systemProbe(context: Context, uri: Uri): VideoProbeInfo? {
+        return try {
+            val r = MediaMetadataRetriever()
+            try {
+                if (uri.scheme == "file") {
+                    val path = uri.path ?: return null
+                    r.setDataSource(path)
+                } else {
+                    r.setDataSource(context, uri)
+                }
+                val duration =
+                    r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                val width = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                val height = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                val info = VideoProbeInfo(duration, width, height)
+                // 时长和分辨率一个都没拿到，等价于"没探到"，交给下一级
+                if (info.isEmpty) null else info
+            } finally {
+                runCatching { r.release() }
+            }
+        } catch (_: Throwable) {
+            null
         }
     }
 }
