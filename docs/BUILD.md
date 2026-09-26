@@ -1,4 +1,4 @@
-# CastKit 构建说明（Windows + WSL2 混合路线 / aarch64 容器路线）
+# CastKit 构建说明（纯 WSL2 / Windows+WSL2 混合 / aarch64 容器 三条路线）
 
 CastKit 由两个 Android 工程组成：
 
@@ -9,20 +9,107 @@ CastKit 由两个 Android 工程组成：
 
 > 先读 `README.md` 的「快速开始」，下面是完整环境说明。
 
-## 0-A. 两条构建路线
+## 0-A. 三条构建路线
 
-接收端的原生依赖（OpenSSL / FFmpeg / UxPlay）是 C/C++，编译只需要一个 Linux 宿主的 NDK，
-**不需要 JDK**；而 APK 打包需要 JDK + Android SDK。本机（Windows + WSL2 Debian）刚好一半一半，
-所以用「Linux 编原生依赖、Windows 打 APK」的混合路线，比在容器里补齐 JDK 更快也更好维护：
+接收端的原生依赖（OpenSSL / FFmpeg / UxPlay）是 C/C++，编译只需要一个 Linux 宿主的 NDK；
+而 APK 打包需要 JDK + Android SDK。本机是 Windows + WSL2 Debian，于是有三条路可走：
 
 | 路线 | 适用 | 说明 |
 |---|---|---|
-| **混合（Windows + WSL2）** 推荐 | 本机日常开发、Android Studio 里直接跑 | WSL 里只跑 `tools/build-native-deps.sh`；其余全在 Windows 侧 Gradle 完成。见下面「0-B」 |
-| 纯容器（aarch64） | 完整的离线镜像方案 | 也就是第 1 节之后描述的 `tools/build-receiver.sh` 全流程；宿主是 aarch64，需要 qemu 模拟 x86_64 工具链 |
+| **纯 WSL2** | 一次装好、之后完全可复现的 Linux 全流程 | NDK r27 + CMake + JDK 17 + Linux 版 Android SDK 全部装在 `$HOME` 下（不需要 root/sudo），`gradlew` 在 WSL 里跑完整流程。见「0-B」 |
+| **混合（Windows + WSL2）** | 日常开发、Android Studio 里直接 Run | WSL 里只跑 `tools/build-native-deps.sh` 编原生依赖；其余全在 Windows 侧 Gradle 完成。见「0-C」 |
+| 纯容器（aarch64） | 完整的离线镜像方案 | 第 1 节之后描述的 `tools/build-receiver.sh` 全流程；宿主是 aarch64，需要 qemu 模拟 x86_64 工具链 |
 
-## 0-B. 混合路线：Windows + WSL2 构建接收端
+三条路线产出的 APK 功能等价（同源码、同 NDK、同依赖版本）。实测同一版本分别用 WSL 与 Windows
+构建：条目数与每个条目大小完全一致，只有 `libairplay_native.so` 差 152 字节（里面嵌的构建路径不同）
+和 zip/签名元数据不同，所以 SHA-256 不同。
 
-### B1. 在 WSL 里预编译原生依赖
+## 0-B. 纯 WSL 路线（推荐）：一次装好工具链
+
+WSL Debian 是 x86_64，所以 Android SDK 自带的 `aapt2`/`d8`/`apksigner`、NDK 的 `clang`
+都是原生可执行的，**不需要 qemu**。全部装在 `$HOME` 下，不碰系统目录。
+
+```bash
+REPO=/mnt/e/program/Aixiede/castkit     # 换成你的仓库路径
+mkdir -p ~/dl ~/opt ~/android
+
+# ---- 1) Linux 版 NDK r27（Windows 侧那份的 clang 是 .exe，WSL 用不了）----
+curl -sSL -o ~/dl/ndk.zip https://dl.google.com/android/repository/android-ndk-r27-linux.zip
+python3 "$REPO/tools/unzip-symlinks.py" ~/dl/ndk.zip ~/opt/     # 认符号链接，见 0-C 的说明
+~/opt/android-ndk-r27/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --version   # 自检
+
+# ---- 2) CMake + Ninja（用 SDK 里那对 x86_64 Linux 版，和 AGP 期望的版本一致）----
+curl -sSL -o ~/dl/cmake.zip https://dl.google.com/android/repository/cmake-3.22.1-linux.zip
+mkdir -p ~/opt/cmake && python3 "$REPO/tools/unzip-symlinks.py" ~/dl/cmake.zip ~/opt/cmake/
+~/opt/cmake/bin/cmake --version && ~/opt/cmake/bin/ninja --version
+
+# ---- 3) JDK 17（Temurin，解包即用）----
+curl -sSL -o ~/dl/jdk.tar.gz \
+  "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse"
+tar -xzf ~/dl/jdk.tar.gz -C ~/opt/          # 得到 ~/opt/jdk-17.x.y+z
+
+# ---- 4) Linux 版 Android SDK：cmdline-tools + platform 36 + build-tools 36 ----
+curl -sSL -o ~/dl/cmdline-tools.zip \
+  https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
+mkdir -p ~/android/cmdline-tools
+python3 "$REPO/tools/unzip-symlinks.py" ~/dl/cmdline-tools.zip ~/android/cmdline-tools/tmp/
+mv ~/android/cmdline-tools/tmp/cmdline-tools ~/android/cmdline-tools/latest
+rm -rf ~/android/cmdline-tools/tmp
+export JAVA_HOME=$(ls -d ~/opt/jdk-17*| head -1)
+export PATH="$JAVA_HOME/bin:~/android/cmdline-tools/latest/bin:$PATH"
+yes | sdkmanager --sdk_root="$HOME/android" --licenses
+sdkmanager --sdk_root="$HOME/android" "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+```
+
+装完之后每个 shell 里导出这几个变量即可构建（或在 `~/.bashrc` 里固化）：
+
+```bash
+export JAVA_HOME=$(ls -d ~/opt/jdk-17* | head -1)
+export ANDROID_HOME="$HOME/android" ANDROID_SDK_ROOT="$HOME/android"
+export ANDROID_NDK_HOME="$HOME/opt/android-ndk-r27"
+export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$HOME/opt/cmake/bin:$PATH"
+
+# AGP 按 ndkVersion 去 $ANDROID_HOME/ndk/27.0.12077973 找 NDK，我们的 NDK 不在 SDK 里，
+# 所以挂一个符号链接进去（和 Windows 侧用目录联结点是同一个道理）
+mkdir -p "$ANDROID_HOME/ndk"
+ln -sfn "$ANDROID_NDK_HOME" "$ANDROID_HOME/ndk/27.0.12077973"
+
+# 原生依赖 + APK 全在 WSL 里产出
+export CASTKIT_TREE="$HOME/build/castkit"
+bash "$REPO/tools/build-native-deps.sh" arm64-v8a          # OpenSSL + 最小 FFmpeg，8 核约 40 秒
+
+# 工程树放到 ext4（/mnt/e 上是 9p，编译慢很多）
+mkdir -p "$CASTKIT_TREE/receiver"
+tar -C "$REPO/receiver" -cf - \
+    --exclude='./app/build' --exclude='./app/.cxx' --exclude='./.gradle' \
+    --exclude='./build' --exclude='./local.properties' . | tar -C "$CASTKIT_TREE/receiver" -xf -
+chmod +x "$CASTKIT_TREE/receiver/gradlew"
+
+# 平台无关的第三方源码适配（幂等，必跑，否则 android_raop_callbacks.c 编不过）
+mkdir -p "$CASTKIT_TREE/tools"
+cp -f "$REPO/tools/port-sources.py" "$CASTKIT_TREE/tools/"
+python3 "$CASTKIT_TREE/tools/port-sources.py" \
+    "$CASTKIT_TREE/receiver/app/src/main/cpp/third_party" "$CASTKIT_TREE"
+
+cat > "$CASTKIT_TREE/receiver/local.properties" <<EOF
+sdk.dir=$HOME/android
+cmake.dir=$HOME/opt/cmake
+EOF
+
+cd "$CASTKIT_TREE/receiver"
+bash ./gradlew --no-daemon :app:assembleDebug \
+    -PcastkitAbis=arm64-v8a \
+    -PcastkitDepsRoot="$CASTKIT_TREE/native-deps"
+#  产物: $CASTKIT_TREE/receiver/app/build/outputs/apk/debug/app-debug.apk
+```
+
+> `tar` 那一步**不要**排除 `app/src/main/cpp/third_party`（除非你在别处已经有了一份）。
+> 同理，如果目标目录里已经有 `third_party`，别先 `rm -rf` 整个 receiver 目录再去 tar——
+> 那会把 198 MB 的第三方源码一起删掉，重新从 `/mnt/e` 拷要 4 分钟。
+
+## 0-C. 混合路线：Windows + WSL2 构建接收端
+
+### C1. 在 WSL 里预编译原生依赖
 
 ```bash
 # 1) Linux 版 NDK r27（Windows 侧的 NDK 里的 clang 是 .exe，WSL 用不了）
@@ -49,7 +136,7 @@ bash "$CASTKIT_TREE/tools/build-native-deps.sh" arm64-v8a      # 8 核约 40 秒
 产物在 `$CASTKIT_TREE/native-deps/arm64-v8a/{openssl,ffmpeg}`。
 `/home/...` 对 Windows 侧不可见，必须拷到 `/mnt/e/...` 或任何 `E:\` 路径下再用。
 
-### B2. 在 Windows 上打包 APK
+### C2. 在 Windows 上打包 APK
 
 ```powershell
 # 一次性准备
@@ -76,7 +163,7 @@ cd receiver
 #  产物: receiver\app\build\outputs\apk\debug\app-debug.apk
 ```
 
-### B3. 混合路线踩过的坑（都已修好，改代码时注意别改回去）
+### C3. 混合路线踩过的坑（都已修好，改代码时注意别改回去）
 
 | 现象 | 原因 / 处理 |
 |---|---|
@@ -84,11 +171,11 @@ cd receiver
 | `***** Unsupported options: no-cast no-md2 …` + `Failure! build file wasn't produced.` | `tools/build-native-deps.sh` 里 OpenSSL 的整串 disable 选项被当成**一个** argv。每个选项必须独立传参。容器里被「复用 third_party/openssl-src 旧静态库」的快路径掩盖了 |
 | `error: use of undeclared identifier 'RESET_TYPE_HLS_CONN_CLOSED'` | 没跑 `tools/port-sources.py`。见第 3 节「与上游的偏差」 |
 | `Custom AAPT2 location does not point to an AAPT2 executable: /opt/castkit-host/bin/aapt2` | `receiver/gradle.properties` 里残留的容器专用 `android.aapt2FromMavenOverride`。已删除 |
-| `Installed Build Tools revision 35.0.0 is corrupted` | 两侧共用同一个 SDK 目录，`35.0.0` 是 Linux 可执行文件、`36.0.0` 是 Windows `.exe`。两个工程的 `app/build.gradle.kts` 已按 `os.name` 分支 |
+| `Installed Build Tools revision 35.0.0 is corrupted` | 同一个 SDK 目录里混着两平台产物（`35.0.0` 是 Linux 可执行文件、`36.0.0` 是 Windows `.exe`），或该版本号根本没装。两个工程的 `app/build.gradle.kts` 现在会按「目录存在 + 当前平台的 `aapt2` 存在」自动挑版本号最高的那个，不再按 `os.name` 硬编码 |
 | `CastKit-Receiver…apk` 比预期大好几 MB | 旧包是增量打包留下的，zip 里有失效的本地条目（`PK\x03\x04` 计数远多于中央目录条目数）。`gradlew clean` 后重打即可 |
 
 
-## 0. 本机限制（都是实测结论）
+## 0-D. 容器（aarch64）路线：本机限制（都是实测结论）
 
 | 限制 | 影响 | 方案 |
 |---|---|---|
@@ -199,7 +286,7 @@ CASTKIT_ABIS=arm64-v8a,armeabi-v7a bash tools/build-receiver.sh
 |---|---|
 | `sdkmanager: Permission denied` | `chmod +x /opt/android-sdk/cmdline-tools/latest/bin/*` |
 | `AAPT2 Daemon #0: Daemon startup failed` | 容器侧：确认 `tools/setup-host-compat.sh` 已生成 `/opt/castkit-host/bin/aapt2`。**不要**把 `android.aapt2FromMavenOverride` 写进 `gradle.properties`——Windows/Android Studio 侧会因此直接以 `Custom AAPT2 location does not point to an AAPT2 executable` 失败，且 `tools/` 里没有任何脚本会注入该属性 |
-| `Installed Build Tools revision 35.0.0 is corrupted` / `missing AAPT at ...\35.0.0\aapt.exe` | 两侧共用同一个 SDK 目录，而 `build-tools/35.0.0` 是 Linux 可执行文件、`36.0.0` 是 Windows `.exe`。两个工程的 `app/build.gradle.kts` 已按 `os.name` 分支选版本（Windows→36.0.0，Linux→35.0.0）；若新增工程需照抄 |
+| `Installed Build Tools revision 35.0.0 is corrupted` / `missing AAPT at ...\35.0.0\aapt.exe` | 同一个 SDK 目录里混着两平台产物（`build-tools/35.0.0` 是 Linux 可执行文件、`36.0.0` 是 Windows `.exe`），或该版本号没装。两个工程的 `app/build.gradle.kts` 现在按「目录存在 + 当前平台的 `aapt2` 存在」自动挑版本号最高的那个（Windows 会跳过只有 Linux 二进制的 35.0.0，选中 36.0.0）；新增工程照抄即可 |
 | `ld.lld: unable to find library -lgcc / -latomic` | 重新执行 `tools/setup-ndk-host-wrappers.sh`（确认包装脚本含 `-resource-dir` 与 `-rtlib=compiler-rt`） |
 | `./configure: Permission denied` | `bash tools/fetch-sources.sh`（会补齐脚本执行位）或手动 `chmod +x` 那两个 configure |
 | `Host compiler lacks C11 support`（FFmpeg） | `apt-get install -y gcc` |

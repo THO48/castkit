@@ -23,21 +23,44 @@ val castkitAbis: List<String> = (findProperty("castkitAbis") as String?)
     ?.takeIf { it.isNotEmpty() }
     ?: allAbis
 
+// build-tools 的版本不能按 os.name 硬编码：
+//   ① Windows 与 WSL/容器可能**共用同一个 SDK 目录**，而同一版本号在一侧是 Linux 可执行文件、
+//      另一侧是 Windows .exe（`35.0.0` 是 Linux、`36.0.0` 是 Windows 的机器上就是这样）；
+//   ② 一台机器上也常常只装了其中一个版本，另一个版本号会直接报
+//        Installed Build Tools revision 35.0.0 is corrupted
+//        Build-tool 35.0.0 is missing AAPT at ...\35.0.0\aapt.exe
+// 所以这里改成按「目录存在 + 当前平台对应的 aapt2 可执行文件存在」来挑，
+// 取版本号最高的那个；一个都没有就留空，让 AGP 用默认值并给出它自己的正常报错。
+// AGP 不认识 -Pandroid.buildToolsVersion 这种属性覆盖，只认这里的 DSL。与 sender 保持一致。
+val castkitBuildTools: String? = run {
+    val sdkDir: File? = sequenceOf(
+        localProps.getProperty("sdk.dir"),
+        System.getenv("ANDROID_HOME"),
+        System.getenv("ANDROID_SDK_ROOT"),
+    ).firstOrNull { !it.isNullOrBlank() }?.let { file(it) }
+
+    val aapt2Name =
+        if (providers.systemProperty("os.name").get().startsWith("Windows")) "aapt2.exe" else "aapt2"
+
+    fun versionKey(name: String): Int {
+        val v = name.split('.').mapNotNull { it.toIntOrNull() }
+        return v.getOrElse(0) { 0 } * 10_000 + v.getOrElse(1) { 0 } * 100 + v.getOrElse(2) { 0 }
+    }
+
+    sdkDir?.resolve("build-tools")
+        ?.takeIf { it.isDirectory }
+        ?.listFiles()
+        ?.filter { it.isDirectory && it.resolve(aapt2Name).isFile }
+        ?.maxByOrNull { versionKey(it.name) }
+        ?.name
+}
+
 android {
     namespace = "io.github.jqssun.airplay"
     compileSdk = 36
     ndkVersion = "27.0.12077973"
 
-    // build-tools 必须按宿主平台选：Windows 与 aarch64 容器共用同一个 Android SDK 目录，
-    // 而该目录下 build-tools/35.0.0 是 Linux 可执行文件、36.0.0 是 Windows 版 .exe，
-    // 任何单一取值都会让另一侧报
-    //   Installed Build Tools revision 35.0.0 is corrupted
-    //   Build-tool 35.0.0 is missing AAPT at ...\35.0.0\aapt.exe
-    // AGP 不认识 -Pandroid.buildToolsVersion 这种属性覆盖，只认这里的 DSL，
-    // 所以只能在此显式分支（providers 形式对配置缓存友好）。与 sender 保持一致。
-    buildToolsVersion = if (
-        providers.systemProperty("os.name").get().startsWith("Windows")
-    ) { "36.0.0" } else { "35.0.0" }
+    castkitBuildTools?.let { buildToolsVersion = it }
 
     if (localProps.containsKey("storeFile")) {
         signingConfigs {
