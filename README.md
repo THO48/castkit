@@ -19,15 +19,15 @@ Android + CastKit 发送端 ──HTTP 原始视频文件───────�
 | 文件 | 装在 | 大小 |
 |---|---|---|
 | [`CastKit-Sender-1.0.0-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.0/CastKit-Sender-1.0.0-debug.apk) | **发送端** —— 要投出去的设备 | 16.0 MB |
-| [`CastKit-Receiver-0.0.31-castkit.1-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.0/CastKit-Receiver-0.0.31-castkit.1-debug.apk) | **接收端** —— 显示画面的设备 | 37.6 MB |
+| [`CastKit-Receiver-0.0.31-castkit.1-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.0/CastKit-Receiver-0.0.31-castkit.1-debug.apk) | **接收端** —— 显示画面的设备 | 30.2 MB |
 
 全部版本见 [Releases](https://github.com/THO48/castkit/releases)。
 
 **安装前必读**
 
-- 两个包都是 **debug 构建**。发送端要出正式签名版需要发布密钥托管；接收端因为构建环境缺少
-  NDK/CMake **无法重新打包**，现有产物就是 debug 版。debug 包可直接安装使用，但它**不能和以后
-  正式签名的包互相覆盖升级**（届时需先卸载）。
+- 两个包都是 **debug 构建**。发送端要出正式签名版需要发布密钥托管；接收端要出正式版需要重新交叉编译
+  OpenSSL / FFmpeg 并托管发布密钥。debug 包可直接安装使用，但它**不能和以后正式签名的包互相覆盖升级**
+  （届时需先卸载）。
 - 接收端**只含 `arm64-v8a`** 原生库（OpenSSL / FFmpeg / UxPlay 内核），只能装在 arm64 设备上。
 - 发送端含 `arm64-v8a / armeabi-v7a / x86 / x86_64` 四种 ABI。
 - 需要先在系统设置里允许「安装未知来源应用」。

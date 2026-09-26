@@ -47,3 +47,7 @@ third_party/
 Thumbs.db
 *.log
 *.hprof
+
+# ---- Python（tools/ 下的辅助脚本）----
+__pycache__/
+*.pyc

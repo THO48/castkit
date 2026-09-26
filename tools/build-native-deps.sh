@@ -57,10 +57,17 @@ if [ ! -f "$DEPS/openssl/lib/libcrypto.a" ]; then
   SRC="$TP/openssl-src"
   ( cd "$SRC" && make clean >/dev/null 2>&1 || true )
   rm -f "$SRC/configdata.pm" "$SRC/Makefile"
+  # 注意：Configure 的每个选项都必须是独立的 argv。
+  # 早先这里把整串选项塞进一对引号当成单个参数传进去，OpenSSL 会报
+  #   ***** Unsupported options: no-cast no-md2 ...
+  #   Failure! build file wasn't produced.
+  # 之前被上面的“快路径”（复用 third_party/openssl-src 里的旧静态库）掩盖了。
   ( cd "$SRC" && ./Configure "$OPENSSL_TARGET" \
-      "-D__ANDROID_API__=$API_LEVEL --libdir=lib --prefix=$DEPS/openssl" \
-      "no-cast no-md2 no-md4 no-mdc2 no-rc4 no-rc5 no-engine no-idea no-camellia no-ssl3 \
-no-heartbeats no-gost no-deprecated no-capieng no-comp no-dtls no-psk no-srp no-dso no-dsa no-rc2 no-des" \
+      "-D__ANDROID_API__=$API_LEVEL" \
+      --libdir=lib \
+      --prefix="$DEPS/openssl" \
+      no-cast no-md2 no-md4 no-mdc2 no-rc4 no-rc5 no-engine no-idea no-camellia no-ssl3 \
+      no-heartbeats no-gost no-deprecated no-capieng no-comp no-dtls no-psk no-srp no-dso no-dsa no-rc2 no-des \
       no-tests no-hw > "$DEPS/openssl-configure.log" 2>&1 )
   log "OpenSSL 配置完成，编译中…"
   ( cd "$SRC" && make -j"$JOBS" > "$DEPS/openssl-build.log" 2>&1 )

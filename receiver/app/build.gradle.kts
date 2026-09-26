@@ -28,6 +28,17 @@ android {
     compileSdk = 36
     ndkVersion = "27.0.12077973"
 
+    // build-tools 必须按宿主平台选：Windows 与 aarch64 容器共用同一个 Android SDK 目录，
+    // 而该目录下 build-tools/35.0.0 是 Linux 可执行文件、36.0.0 是 Windows 版 .exe，
+    // 任何单一取值都会让另一侧报
+    //   Installed Build Tools revision 35.0.0 is corrupted
+    //   Build-tool 35.0.0 is missing AAPT at ...\35.0.0\aapt.exe
+    // AGP 不认识 -Pandroid.buildToolsVersion 这种属性覆盖，只认这里的 DSL，
+    // 所以只能在此显式分支（providers 形式对配置缓存友好）。与 sender 保持一致。
+    buildToolsVersion = if (
+        providers.systemProperty("os.name").get().startsWith("Windows")
+    ) { "36.0.0" } else { "35.0.0" }
+
     if (localProps.containsKey("storeFile")) {
         signingConfigs {
             create("release") {
