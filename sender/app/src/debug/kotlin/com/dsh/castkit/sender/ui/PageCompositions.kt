@@ -432,11 +432,15 @@ private fun PlayerComposition(casting: Boolean) {
                 positionMs = 252_000L,
                 durationMs = 754_000L,
                 playing = !casting,
+                hasPrev = true,
+                hasNext = false,
                 onScrub = {},
                 onScrubFinished = {},
+                onPrev = {},
                 onSeekBack = {},
-                onSeekForward = {},
                 onPlayPause = {},
+                onSeekForward = {},
+                onNext = {},
             )
         }
     }

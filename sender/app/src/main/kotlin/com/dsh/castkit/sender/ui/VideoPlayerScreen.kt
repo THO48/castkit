@@ -40,6 +40,8 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.CircularProgressIndicator
@@ -139,6 +141,11 @@ fun VideoPlayerScreen(
     onRemoteToggle: () -> Unit,
     onRemoteSeek: (Long) -> Unit,
     onClose: () -> Unit,
+    /** 上一个 / 下一个视频；列表为空或已在两端时对应回调不会触发（按钮也会置灰）。 */
+    hasPrev: Boolean = false,
+    hasNext: Boolean = false,
+    onPrev: () -> Unit = {},
+    onNext: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -357,6 +364,8 @@ fun VideoPlayerScreen(
                     positionMs = position,
                     durationMs = duration,
                     playing = playing,
+                    hasPrev = hasPrev,
+                    hasNext = hasNext,
                     onScrub = { scrubMs = it },
                     onScrubFinished = {
                         val target = scrubMs
@@ -365,9 +374,11 @@ fun VideoPlayerScreen(
                         }
                         scrubMs = null
                     },
+                    onPrev = onPrev,
                     onSeekBack = { seekBy(-SEEK_STEP_MS) },
-                    onSeekForward = { seekBy(SEEK_STEP_MS) },
                     onPlayPause = { if (remote) onRemoteToggle() else vm.toggle() },
+                    onSeekForward = { seekBy(SEEK_STEP_MS) },
+                    onNext = onNext,
                 )
             }
         }
@@ -430,17 +441,21 @@ internal fun PlayerTopBar(title: String, onBack: () -> Unit) {
     )
 }
 
-/** 底栏：进度条 + 时间码 + 三格控制排。 */
+/** 底栏：进度条 + 时间码 + 五格控制排。 */
 @Composable
 internal fun PlayerBottomControls(
     positionMs: Long,
     durationMs: Long,
     playing: Boolean,
+    hasPrev: Boolean,
+    hasNext: Boolean,
     onScrub: (Long) -> Unit,
     onScrubFinished: () -> Unit,
+    onPrev: () -> Unit,
     onSeekBack: () -> Unit,
-    onSeekForward: () -> Unit,
     onPlayPause: () -> Unit,
+    onSeekForward: () -> Unit,
+    onNext: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -474,14 +489,22 @@ internal fun PlayerBottomControls(
             )
         }
 
-        // 只留播放本身需要的那三个：后退10 | 播放暂停(64dp) | 前进10。
-        // 「切方向」挪到顶栏下方、「投屏」挪到本栏左上方，都做成悬浮钮。
-        // SpaceBetween 在只有三格时正好把主按钮顶在正中，两侧等距。
+        // 五格：上一个视频 | 后退10 | 播放暂停(64dp) | 前进10 | 下一个视频。
+        // 「切方向」在顶栏下方、「投屏」在本栏左上方，都是悬浮钮，不在这排里。
+        // 宽度核算：48×4 + 64 = 256dp，加两端 16dp 留白 = 288dp，
+        // 在 360dp 窄屏上仍有余量，所以不需要缩小图标或收紧间距。
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            PlayerIconSlot(
+                icon = Icons.Filled.SkipPrevious,
+                label = stringResource(R.string.player_prev_video),
+                enabled = hasPrev,
+                onClick = onPrev,
+            )
+
             // ±10 秒不加文字标签：Replay10 / Forward10 图标本身带 "10"
             PlayerIconSlot(
                 icon = Icons.Filled.Replay10,
@@ -495,6 +518,13 @@ internal fun PlayerBottomControls(
                 icon = Icons.Filled.Forward10,
                 label = stringResource(R.string.player_forward_10),
                 onClick = onSeekForward,
+            )
+
+            PlayerIconSlot(
+                icon = Icons.Filled.SkipNext,
+                label = stringResource(R.string.player_next_video),
+                enabled = hasNext,
+                onClick = onNext,
             )
         }
     }
@@ -679,6 +709,9 @@ private fun ScrubBar(
  *
  * @param text 图标下方的 11sp 极小文字；传 null 表示不放（±10 秒用不到，
  *        因为图标本身带 "10"）。
+ * @param enabled false 表示这个操作当前没有意义（例如已经是列表第一个，"上一个"），
+ *        图标降到 38% 不透明度并且不响应点击 —— 置灰而不是隐藏，
+ *        这样控制排的格数和位置不会随播放位置跳来跳去。
  */
 @Composable
 private fun PlayerIconSlot(
@@ -688,6 +721,7 @@ private fun PlayerIconSlot(
     modifier: Modifier = Modifier,
     text: String? = null,
     active: Boolean = false,
+    enabled: Boolean = true,
 ) {
     Column(
         modifier = modifier,
@@ -697,13 +731,17 @@ private fun PlayerIconSlot(
             modifier = Modifier
                 .size(CastKitSizes.minTouchTarget)
                 .clip(CircleShape)
-                .clickable(onClick = onClick),
+                .clickable(enabled = enabled, onClick = onClick),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = label,
-                tint = if (active) ImmersiveColors.Accent else ImmersiveColors.OnScrim,
+                tint = when {
+                    !enabled -> ImmersiveColors.OnScrim.copy(alpha = 0.38f)
+                    active -> ImmersiveColors.Accent
+                    else -> ImmersiveColors.OnScrim
+                },
                 modifier = Modifier.size(CastKitSizes.playerSecondaryGlyph),
             )
         }

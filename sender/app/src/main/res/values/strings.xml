@@ -122,6 +122,8 @@
     <string name="player_label_stop">停止</string>
     <string name="player_forward_10">前进 10 秒</string>
     <string name="player_rewind_10">后退 10 秒</string>
+    <string name="player_prev_video">上一个视频</string>
+    <string name="player_next_video">下一个视频</string>
     <!-- 投送中沉浸态（替代本机 Surface 的死帧） -->
     <string name="casting_immersive_title">正在投送到</string>
     <string name="casting_immersive_desc">本机已暂停，这里的播放与进度条控制的是接收端</string>

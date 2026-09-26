@@ -82,6 +82,12 @@ fun MainScreen(
     val context = LocalContext.current
     var tab by remember { mutableStateOf(HomeTab.CAST) }
     var playing by remember { mutableStateOf<Uri?>(null) }
+
+    /**
+     * 打开播放页时当前文件夹的播放列表（显示顺序）。
+     * 播放页的「上一个/下一个」按它走；直接进播放页（系统文件选择器）时只有一个元素。
+     */
+    var playlist by remember { mutableStateOf<List<Uri>>(emptyList()) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     // 投屏页的状态提升到 ViewModel：配置变更 / 页面重建后不再丢失
@@ -157,8 +163,9 @@ fun MainScreen(
 
                     HomeTab.VIDEO -> FileListScreen(
                         vm = browserVm,
-                        onPlay = { uri ->
+                        onPlay = { uri, siblings ->
                             onPickVideoUri(uri)
+                            playlist = siblings
                             playing = uri
                         },
                         onUseSystemPicker = onPickVideo,
@@ -173,6 +180,16 @@ fun MainScreen(
             val title = remember(playingUri) {
                 runCatching { LanCastFileServer.describe(context, playingUri).name }.getOrDefault("")
             }
+            // 上一个/下一个：在打开播放页时那份列表里的位置。找不到（例如换了列表）
+            // 就退化成"没有上下一个"，按钮置灰，不会乱跳。
+            val index = playlist.indexOf(playingUri)
+            val hasPrev = index > 0
+            val hasNext = index >= 0 && index < playlist.size - 1
+            /** 切集：先收掉当前投送，再换片源 —— 否则接收端还在放上一个文件。 */
+            fun switchTo(target: Uri) {
+                if (isVideoCasting()) onStopVideo()
+                playing = target
+            }
             VideoPlayerScreen(
                 uri = playingUri,
                 title = title,
@@ -186,7 +203,12 @@ fun MainScreen(
                     // 退出播放页即结束投送：否则播放页关了，接收端还在自己播
                     if (isVideoCasting()) onStopVideo()
                     playing = null
+                    playlist = emptyList()
                 },
+                hasPrev = hasPrev,
+                hasNext = hasNext,
+                onPrev = { if (hasPrev) switchTo(playlist[index - 1]) },
+                onNext = { if (hasNext) switchTo(playlist[index + 1]) },
             )
         }
     }

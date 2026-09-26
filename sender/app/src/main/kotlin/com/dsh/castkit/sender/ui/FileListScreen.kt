@@ -94,7 +94,8 @@ private const val BASE_COLUMNS = 60
 @Composable
 fun FileListScreen(
     vm: BrowserViewModel,
-    onPlay: (Uri) -> Unit,
+    /** (被点的视频, 当前文件夹的播放列表) —— 第二个参数给播放页的「上一个/下一个」用。 */
+    onPlay: (Uri, List<Uri>) -> Unit,
     onUseSystemPicker: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -257,7 +258,7 @@ fun FileListScreen(
 private fun LibraryGrid(
     vm: BrowserViewModel,
     state: LibraryUiState.Content,
-    onPlay: (Uri) -> Unit,
+    onPlay: (Uri, List<Uri>) -> Unit,
 ) {
     val iconSize = vm.iconSize
     val avatarSize = when (iconSize) {
@@ -297,6 +298,9 @@ private fun LibraryGrid(
         }
 
         if (state.videos.isNotEmpty()) {
+            // 播放页的「上一个/下一个」按**当前文件夹的显示顺序**走，
+            // 所以这里把这份列表一起交给播放页（排序变了列表也跟着变）。
+            val playlist = state.videos.map { it.uri }
             item(span = { GridItemSpan(maxLineSpan) }) {
                 SectionHeader(
                     text = stringResource(R.string.browser_video_count, state.videos.size),
@@ -308,7 +312,11 @@ private fun LibraryGrid(
                 key = { "video:" + it.key },
                 span = { GridItemSpan(BASE_COLUMNS / iconSize.videoCols) },
             ) { video ->
-                LibraryVideoTile(video = video, iconSize = iconSize, onPlay = onPlay)
+                LibraryVideoTile(
+                    video = video,
+                    iconSize = iconSize,
+                    onPlay = { uri -> onPlay(uri, playlist) },
+                )
             }
         }
     }
