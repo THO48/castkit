@@ -464,6 +464,9 @@
 **顶部栏**：`返回` + 文件名（**marquee 跑马灯**，单行）。**不放"更多 ⋮"**——理由见 §10 偏差 2。
 
 **顶部栏正下方**：`切到横屏 / 切到竖屏` 悬浮钮（胶囊形 scrim 底 + `ScreenRotation` 24dp + 文字）。
+手动切过的方向会**持久记住**（`Prefs.player_orientation`，两态、没有"跟随系统"档也没有清除入口）：
+进播放页时贴回来，退出播放页（`onDispose`）恢复 `SCREEN_ORIENTATION_UNSPECIFIED` 交还系统。
+用 `SENSOR_LANDSCAPE / SENSOR_PORTRAIT` 而不是锁死 `LANDSCAPE / PORTRAIT`，保留同方向内正反都能翻。
 
 **底部控制区**（进度条 + 时间码 + 五格控制排，每个动作全页只出现一次）：
 

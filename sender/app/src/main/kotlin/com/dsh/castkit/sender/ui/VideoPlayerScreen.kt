@@ -78,6 +78,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.dsh.castkit.sender.PlayerOrientation
+import com.dsh.castkit.sender.Prefs
 import com.dsh.castkit.sender.R
 import com.dsh.castkit.sender.cast.CastBus
 import com.dsh.castkit.sender.cast.CastMode
@@ -99,6 +101,12 @@ import kotlin.math.roundToInt
 
 /** 播放页两端的横向留白。 */
 private val PlayerEdgePadding = 16.dp
+
+/** 播放页记住的方向 → Android 的方向常量。用 `SENSOR_*` 保留同方向内正反都能翻。 */
+private fun PlayerOrientation.toActivityInfo(): Int = when (this) {
+    PlayerOrientation.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    PlayerOrientation.PORTRAIT -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+}
 
 /** 长按快进的倍速。3× 是主流视频 App 的常见值：够快，又不至于完全看不清内容。 */
 private const val FAST_RATE = 3f
@@ -189,6 +197,13 @@ fun VideoPlayerScreen(
     val remote = casting
 
     LaunchedEffect(uri) { vm.play(uri, title) }
+
+    // 进播放页时把上次手动切过的方向贴回来；没切过就什么都不做（跟随系统）。
+    // 用 LaunchedEffect 而不是塞进下面 DisposableEffect 的 body：后者是在组合期跑副作用，
+    // 而 requestedOrientation 会触发配置变更，放在组合之后更稳。
+    LaunchedEffect(Unit) {
+        Prefs.playerOrientation(context)?.let { activity?.requestedOrientation = it.toActivityInfo() }
+    }
 
     DisposableEffect(Unit) {
         // 告诉 CastService：本机旋转是"看片用"的，别带动镜像画面
@@ -427,11 +442,14 @@ fun VideoPlayerScreen(
                         if (isLandscape) R.string.player_label_portrait else R.string.player_label_landscape,
                     ),
                     onClick = {
-                        activity?.requestedOrientation = if (isLandscape) {
-                            ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                        val target = if (isLandscape) {
+                            PlayerOrientation.PORTRAIT
                         } else {
-                            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                            PlayerOrientation.LANDSCAPE
                         }
+                        activity?.requestedOrientation = target.toActivityInfo()
+                        // 记住这次选择：下次进播放页自动应用（退出播放页仍恢复跟随系统）
+                        Prefs.setPlayerOrientation(context, target)
                         // 只在第一次提示一次，之后不再打扰
                         if (!orientationHintShown) orientationHintShown = true
                     },

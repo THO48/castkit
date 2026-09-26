@@ -48,6 +48,14 @@ enum class ResolutionPreset(
     NATIVE("跟随本机", null, 0, 0),
 }
 
+/**
+ * 播放页里手动切过的屏幕方向。
+ *
+ * `null`（没存过 / 解析失败）= 从没切过 —— 进播放页时**不动**方向，跟随系统。
+ * 刻意只有两态、不提供「跟随系统」档，也没有清除入口：语义就是"记住最后一次"。
+ */
+enum class PlayerOrientation { LANDSCAPE, PORTRAIT }
+
 object Prefs {
     private const val FILE = "castkit_sender"
     private const val K_PRESET = "preset"
@@ -61,6 +69,7 @@ object Prefs {
     private const val K_SORT_ASC = "browser_sort_asc"
     private const val K_ICON_SIZE = "browser_icon_size"
     private const val K_NOMEDIA = "browser_include_nomedia"
+    private const val K_PLAYER_ORIENTATION = "player_orientation"
 
     const val DEF_FPS = 30
     const val DEF_BITRATE_MBPS = 8
@@ -168,6 +177,20 @@ object Prefs {
 
     fun setBrowserIncludeNoMedia(context: Context, v: Boolean) {
         get(context).edit().putBoolean(K_NOMEDIA, v).apply()
+    }
+
+    // ---- 播放页的屏幕方向 ----
+
+    /**
+     * 上次在播放页手动切到的方向；没切过（或存的值对不上枚举）返回 `null`。
+     * 调用方拿到 null 就**不要动** `requestedOrientation`，保持跟随系统。
+     */
+    fun playerOrientation(context: Context): PlayerOrientation? = runCatching {
+        get(context).getString(K_PLAYER_ORIENTATION, null)?.let { PlayerOrientation.valueOf(it) }
+    }.getOrNull()
+
+    fun setPlayerOrientation(context: Context, v: PlayerOrientation) {
+        get(context).edit().putString(K_PLAYER_ORIENTATION, v.name).apply()
     }
 
     /** 快捷投屏选中设备后，只更新目标地址（不动分辨率/码率等设置）。 */
