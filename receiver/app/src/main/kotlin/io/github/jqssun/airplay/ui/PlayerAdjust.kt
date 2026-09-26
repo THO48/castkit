@@ -18,10 +18,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Brightness6
-import androidx.compose.material.icons.rounded.VolumeUp
+import androidx.compose.material.icons.filled.Brightness6
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -35,6 +34,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import io.github.jqssun.airplay.ui.theme.ImmersiveColors
+import io.github.jqssun.airplay.ui.theme.PillShape
+import io.github.jqssun.airplay.ui.theme.PlayerSpacing
+import io.github.jqssun.airplay.ui.theme.PlayerType
 import kotlin.math.roundToInt
 
 /** 竖滑能调的两样东西：左半屏亮度、右半屏音量。 */
@@ -120,19 +123,19 @@ fun PlayerAdjustIndicator(
     val v = value.coerceIn(0f, 1f)
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(percent = 50))
-            .background(Color(0xCC000000))
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .clip(PillShape)
+            .background(ImmersiveColors.Scrim)
+            .padding(horizontal = PlayerSpacing.space4, vertical = PlayerSpacing.space3),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(PlayerSpacing.space3),
     ) {
         Icon(
             imageVector = when (target) {
-                PlayerAdjustTarget.BRIGHTNESS -> Icons.Rounded.Brightness6
-                PlayerAdjustTarget.VOLUME -> Icons.Rounded.VolumeUp
+                PlayerAdjustTarget.BRIGHTNESS -> Icons.Filled.Brightness6
+                PlayerAdjustTarget.VOLUME -> Icons.Filled.VolumeUp
             },
             contentDescription = null,
-            tint = Color.White,
+            tint = ImmersiveColors.OnScrim,
             modifier = Modifier.size(24.dp),
         )
         Box(
@@ -140,20 +143,20 @@ fun PlayerAdjustIndicator(
                 .width(132.dp)
                 .height(4.dp)
                 .clip(RoundedCornerShape(2.dp))
-                .background(Color(0x66FFFFFF)),
+                .background(ImmersiveColors.ScrubTrackInactive),
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth(v)
                     .height(4.dp)
                     .clip(RoundedCornerShape(2.dp))
-                    .background(MaterialTheme.colorScheme.primary),
+                    .background(ImmersiveColors.Accent),
             )
         }
         Text(
             text = "${(v * 100).roundToInt()}%",
-            color = Color.White,
-            style = MaterialTheme.typography.labelMedium,
+            style = PlayerType.labelMedium,
+            color = ImmersiveColors.OnScrim,
         )
     }
 }

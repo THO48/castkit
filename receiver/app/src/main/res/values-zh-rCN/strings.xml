@@ -47,6 +47,9 @@
     <string name="cd_rotate">旋转屏幕</string>
     <string name="cd_lock_controls">锁定控件</string>
     <string name="cd_unlock_controls">解锁控件</string>
+    <string name="cd_seek_back_10">后退 10 秒</string>
+    <string name="cd_seek_forward_10">前进 10 秒</string>
+    <string name="lan_video_fallback_title">投屏视频</string>
 
     <string name="scale_best_fit">适应</string>
     <string name="scale_stretch">拉伸</string>

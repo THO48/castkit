@@ -58,6 +58,10 @@
     <string name="cd_rotate">Rotate screen</string>
     <string name="cd_lock_controls">Lock controls</string>
     <string name="cd_unlock_controls">Unlock controls</string>
+    <!-- CastKit: 局域网投视频播放页（与发送端同一套样式） -->
+    <string name="cd_seek_back_10">Back 10 seconds</string>
+    <string name="cd_seek_forward_10">Forward 10 seconds</string>
+    <string name="lan_video_fallback_title">Cast video</string>
     <string name="scale_best_fit">Best fit</string>
     <string name="scale_stretch">Stretch</string>
     <string name="scale_crop">Crop</string>

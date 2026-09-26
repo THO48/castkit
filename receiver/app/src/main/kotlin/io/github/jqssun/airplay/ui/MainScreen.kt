@@ -96,13 +96,8 @@ fun MainScreen(
     // CastKit: 局域网「投视频文件」在播时整屏接管（与 AirPlay 视频播放页并列的独立页面）
     val lanVideo by viewModel.lanVideo.collectAsState()
     if (lanVideo.active) {
-        val lanActivity = LocalContext.current as? Activity
-        DisposableEffect(lanActivity) {
-            val window = lanActivity?.window
-            val controller = window?.let { WindowInsetsControllerCompat(it, it.decorView) }
-            controller?.hide(WindowInsetsCompat.Type.systemBars())
-            onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
-        }
+        // 系统栏的显隐由 LanVideoScreen 自己按「控制栏是否可见」来管（与发送端一致），
+        // 这里**不能**再无条件 hide —— 两个 owner 一起写 window 会互相打架、出现闪烁。
         LanVideoScreen(
             state = lanVideo,
             onSurfaceAvailable = viewModel::onLanVideoSurfaceAvailable,

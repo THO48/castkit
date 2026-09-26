@@ -78,8 +78,8 @@ android {
         applicationId = "com.dsh.castkit.receiver"
         minSdk = 24
         targetSdk = 36
-        versionCode = 34
-        versionName = "0.0.31-castkit.4"
+        versionCode = 35
+        versionName = "0.0.31-castkit.5"
 
         externalNativeBuild {
             cmake {
