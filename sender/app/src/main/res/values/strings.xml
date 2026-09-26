@@ -116,9 +116,7 @@
     <string name="action_to_landscape">切到横屏</string>
     <string name="action_to_portrait">切到竖屏</string>
     <string name="action_cast">投屏</string>
-    <!-- 播放器底栏的图标标签（2 字，11sp）。±10 秒不加标签：图标本身带 "10" -->
-    <string name="player_label_landscape">横屏</string>
-    <string name="player_label_portrait">竖屏</string>
+    <!-- 「切方向」悬浮钮只留图标不带文字：方向看画面朝向就知道，文字会跟标题抢读 -->
     <string name="player_label_stop">停止</string>
     <string name="player_forward_10">前进 10 秒</string>
     <string name="player_rewind_10">后退 10 秒</string>
@@ -131,10 +129,8 @@
     <!-- Snackbar 文案（替代常驻提示语） -->
     <string name="snackbar_cast_started">已开始投送到 %1$s，本机已暂停</string>
     <string name="snackbar_cast_stopped">已停止投送，进度已对齐到 %1$s</string>
-    <string name="snackbar_orientation">切到横/竖屏只改本机方向，接收端画面不受影响</string>
     <string name="casting_label">投送中</string>
     <string name="cast_receiver">接收端</string>
-    <string name="hint_orientation">「切到横/竖屏」只改本机方向，接收端画面不受影响</string>
     <string name="casting_remote_hint">正在投送到 %1$s · 本机已暂停，这里的播放/进度条控制的是接收端</string>
 
     <!-- 设备选择弹窗 -->
