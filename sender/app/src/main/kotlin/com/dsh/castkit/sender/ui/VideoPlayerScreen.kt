@@ -87,8 +87,7 @@ import com.dsh.castkit.sender.ui.components.CastKitTopBar
 import com.dsh.castkit.sender.ui.components.PlayerAdjustIndicator
 import com.dsh.castkit.sender.ui.components.PlayerAdjustLayer
 import com.dsh.castkit.sender.ui.components.PlayerAdjustTarget
-import com.dsh.castkit.sender.ui.components.PlayerBrightness
-import com.dsh.castkit.sender.ui.components.PlayerBrightnessEffect
+import com.dsh.castkit.sender.ui.components.SystemBrightness
 import com.dsh.castkit.sender.ui.components.SystemVolume
 import com.dsh.castkit.sender.ui.theme.CastKitMotion
 import com.dsh.castkit.sender.ui.theme.CastKitSizes
@@ -179,20 +178,11 @@ fun VideoPlayerScreen(
     /** 长按快进是否正按着 —— 只用来决定要不要显示那个「3× 快进中」提示。 */
     var speedHeld by remember { mutableStateOf(false) }
 
-    // 竖滑调整：亮度只作用于本窗口，音量走系统。两个值都是 0..1 的浮点，
-    // 滑动时连续变化；音量那个实际落到系统上会被量化成整数档（见 SystemVolume 注释）。
+    // 竖滑调整：**两个都是系统级的**（亮度也是），退出播放不还原。
+    // 值都是 0..1 的浮点，滑动时连续变化；实际落到系统上会被量化成整数档（见 SystemBrightness 注释）。
     var adjusting by remember { mutableStateOf<PlayerAdjustTarget?>(null) }
-    var brightness by remember { mutableStateOf(PlayerBrightness.current(context)) }
+    var brightness by remember { mutableStateOf(SystemBrightness.current(context)) }
     var volume by remember { mutableStateOf(SystemVolume.current(context)) }
-
-    /** 进播放页时记下的系统亮度**原始档位**：退出播放、以及切到后台时都要还原成它。 */
-    val savedBrightnessRaw = remember { PlayerBrightness.currentRaw(context) }
-
-    /** 用户是否真的调过亮度：没调过就完全不碰系统亮度（否则进页/切后台会白改一下）。 */
-    var brightnessAdjusted by remember { mutableStateOf(false) }
-
-    // 按 Home / 切到别的 App 时播放页不会 dispose，所以亮度还得靠生命周期管（见 PlayerBrightnessEffect）
-    PlayerBrightnessEffect(activity, context, brightness, savedBrightnessRaw, brightnessAdjusted)
 
     val casting = castState.mode == CastMode.VIDEO &&
         (castState.phase == CastPhase.RUNNING || castState.phase == CastPhase.CONNECTING)
@@ -206,8 +196,7 @@ fun VideoPlayerScreen(
         onDispose {
             // 万一在长按状态里退出（比如被系统收回），变速要复位，不能把 3× 留给下一个片源
             vm.setSpeed(1f)
-            // 亮度只跟播放页绑定：退出就把系统亮度还原（音量不动，那本来就是系统音量）
-            if (brightnessAdjusted) PlayerBrightness.restore(activity, context, savedBrightnessRaw)
+            // 亮度/音量都是系统级的，**不还原** —— 用户滑到哪就是哪（和系统音量条一个语义）
             vm.release()
             CastBus.update { it.copy(localPlayerActive = false) }
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -371,16 +360,15 @@ fun VideoPlayerScreen(
                 adjusting = target
                 // 每次开始滑动都以当前实际值起步，避免上次滑到哪就永远从哪开始
                 when (target) {
-                    PlayerAdjustTarget.BRIGHTNESS -> brightness = PlayerBrightness.current(context)
+                    PlayerAdjustTarget.BRIGHTNESS -> brightness = SystemBrightness.current(context)
                     PlayerAdjustTarget.VOLUME -> volume = SystemVolume.current(context)
                 }
             },
             onDelta = { target, delta ->
                 when (target) {
                     PlayerAdjustTarget.BRIGHTNESS -> {
-                        brightnessAdjusted = true
                         brightness = (brightness + delta).coerceIn(0f, 1f)
-                        PlayerBrightness.apply(activity, brightness)
+                        SystemBrightness.apply(context, activity, brightness)
                     }
 
                     PlayerAdjustTarget.VOLUME -> {

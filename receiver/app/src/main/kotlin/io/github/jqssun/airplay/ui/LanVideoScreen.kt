@@ -67,22 +67,12 @@ fun LanVideoScreen(
     var scrubMs by remember { mutableStateOf<Long?>(null) }
     val position = scrubMs ?: state.positionMs
 
-    // 竖滑调整：亮度只作用于本窗口，音量走系统。两个值都是 0..1 的浮点，
-    // 滑动时连续变化；音量那个实际落到系统上会被量化成整数档（见 SystemVolume 注释）。
+    // 竖滑调整：**两个都是系统级的**（亮度也是），退出播放不还原。
     val context = LocalContext.current
     val activity = context as? Activity
     var adjusting by remember { mutableStateOf<PlayerAdjustTarget?>(null) }
-    var brightness by remember { mutableStateOf(PlayerBrightness.current(context)) }
+    var brightness by remember { mutableStateOf(SystemBrightness.current(context)) }
     var volume by remember { mutableStateOf(SystemVolume.current(context)) }
-
-    /** 进播放页时记下的系统亮度**原始档位**：退出播放、以及切到后台时都要还原成它。 */
-    val savedBrightnessRaw = remember { PlayerBrightness.currentRaw(context) }
-
-    /** 用户是否真的调过亮度：没调过就完全不碰系统亮度（否则进页/切后台会白改一下）。 */
-    var brightnessAdjusted by remember { mutableStateOf(false) }
-
-    // 按 Home / 切到别的 App 时播放页不会 dispose，所以亮度还得靠生命周期管（见 PlayerBrightnessEffect）
-    PlayerBrightnessEffect(activity, context, brightness, savedBrightnessRaw, brightnessAdjusted)
 
     // 播放中自动收起控件；正在拖动进度条时不收
     LaunchedEffect(state.playing, overlayVisible, scrubMs) {
@@ -99,11 +89,7 @@ fun LanVideoScreen(
         onDispose { view.keepScreenOn = false }
     }
 
-    // 亮度只跟本页绑定：退出时按原值还原（有些 ROM 会把窗口亮度写进系统设置；
-    // 音量不动，那本来就是系统音量）
-    DisposableEffect(Unit) {
-        onDispose { if (brightnessAdjusted) PlayerBrightness.restore(activity, context, savedBrightnessRaw) }
-    }
+    // 亮度/音量都是系统级的，**退出不还原** —— 用户滑到哪就是哪
 
     BackHandler { onStop() }
 
@@ -157,16 +143,15 @@ fun LanVideoScreen(
                 adjusting = target
                 // 每次开始滑动都以当前实际值起步，避免上次滑到哪就永远从哪开始
                 when (target) {
-                    PlayerAdjustTarget.BRIGHTNESS -> brightness = PlayerBrightness.current(context)
+                    PlayerAdjustTarget.BRIGHTNESS -> brightness = SystemBrightness.current(context)
                     PlayerAdjustTarget.VOLUME -> volume = SystemVolume.current(context)
                 }
             },
             onDelta = { target, delta ->
                 when (target) {
                     PlayerAdjustTarget.BRIGHTNESS -> {
-                        brightnessAdjusted = true
                         brightness = (brightness + delta).coerceIn(0f, 1f)
-                        PlayerBrightness.apply(activity, brightness)
+                        SystemBrightness.apply(context, activity, brightness)
                     }
 
                     PlayerAdjustTarget.VOLUME -> {
