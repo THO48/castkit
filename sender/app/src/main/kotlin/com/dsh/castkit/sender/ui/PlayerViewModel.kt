@@ -39,6 +39,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun seekTo(positionMs: Long) = player.seekTo(positionMs)
 
+    /** 长按快进：按下传 3.0，松手传回 1.0。 */
+    fun setSpeed(rate: Float) = player.setSpeed(rate)
+
     fun release() = player.release()
 
     override fun onCleared() {

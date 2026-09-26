@@ -16,6 +16,7 @@ import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -94,6 +95,9 @@ import kotlin.math.roundToInt
 /** 播放页两端的横向留白。 */
 private val PlayerEdgePadding = 16.dp
 
+/** 长按快进的倍速。3× 是主流视频 App 的常见值：够快，又不至于完全看不清内容。 */
+private const val FAST_RATE = 3f
+
 /** 快进/快退的步长。 */
 private const val SEEK_STEP_MS = 10_000L
 
@@ -166,6 +170,9 @@ fun VideoPlayerScreen(
     var showDeviceDialog by remember { mutableStateOf(false) }
     var orientationHintShown by remember { mutableStateOf(false) }
 
+    /** 长按快进是否正按着 —— 只用来决定要不要显示那个「3× 快进中」提示。 */
+    var speedHeld by remember { mutableStateOf(false) }
+
     val casting = castState.mode == CastMode.VIDEO &&
         (castState.phase == CastPhase.RUNNING || castState.phase == CastPhase.CONNECTING)
     val remote = casting
@@ -176,6 +183,8 @@ fun VideoPlayerScreen(
         // 告诉 CastService：本机旋转是"看片用"的，别带动镜像画面
         CastBus.update { it.copy(localPlayerActive = true) }
         onDispose {
+            // 万一在长按状态里退出（比如被系统收回），变速要复位，不能把 3× 留给下一个片源
+            vm.setSpeed(1f)
             vm.release()
             CastBus.update { it.copy(localPlayerActive = false) }
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -237,14 +246,45 @@ fun VideoPlayerScreen(
         if (remote) onRemoteSeek(target) else vm.seekTo(target)
     }
 
+    // 长按快进：按下切到 FAST_RATE，松手回 1.0。
+    //
+    // **只在投送时**才需要它 —— 那时本机才是那块在放的屏。开始投屏之后画面在接收端，
+    // 发送端这时只是个遥控器，按需求不做快进（长按不会有任何反应）。
+    //
+    // 手势拆成两半是因为 `detectTapGestures` 的 API 形状：`onLongPress` 是普通 lambda
+    // （拿不到 `awaitRelease`），只有 `onPress` 是 `PressGestureScope` 的挂起 lambda。
+    // 所以「开始」在 onLongPress，「松手」在 onPress 里等 `tryAwaitRelease()` 返回后收尾。
+    // `speedHeld` 既是收尾的判断依据，也驱动那个「3× 快进中」提示。
+    fun fastForward(on: Boolean) {
+        if (remote) return
+        vm.setSpeed(if (on) FAST_RATE else 1f)
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(ImmersiveColors.Background)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-            ) { overlayVisible = !overlayVisible },
+            // 单击切换控制栏显隐；长按 = 快进（按住期间持续，松手恢复）。
+            // 用 detectTapGestures 而不是 clickable + combinedClickable：只有它能拿到
+            // "长按开始 / 松手"这两个时机，而快进必须成对。
+            .pointerInput(remote) {
+                detectTapGestures(
+                    onTap = { overlayVisible = !overlayVisible },
+                    onLongPress = {
+                        if (!remote && !speedHeld) {
+                            speedHeld = true
+                            fastForward(true)
+                        }
+                    },
+                    onPress = {
+                        tryAwaitRelease()
+                        if (speedHeld) {
+                            speedHeld = false
+                            fastForward(false)
+                        }
+                    },
+                )
+            },
         contentAlignment = Alignment.Center,
     ) {
         if (!remote) {
@@ -299,6 +339,20 @@ fun VideoPlayerScreen(
                     modifier = Modifier.padding(CastKitSpacing.space6),
                 )
             }
+        }
+
+        // 长按快进的提示：只在按住期间出现，压在画面正中
+        if (speedHeld) {
+            Text(
+                text = stringResource(R.string.player_speed_indicator, FAST_RATE.toInt()),
+                style = CastKitTheme.typography.titleSmall,
+                color = ImmersiveColors.OnScrim,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .clip(PillShape)
+                    .background(ImmersiveColors.Scrim)
+                    .padding(horizontal = CastKitSpacing.space4, vertical = CastKitSpacing.space2),
+            )
         }
 
         AnimatedVisibility(

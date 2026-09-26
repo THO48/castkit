@@ -313,6 +313,27 @@ class LocalVideoPlayer(
         }
     }
 
+    /**
+     * 变速播放（长按画面快进）。松手时调用方会传回 1.0。
+     *
+     * ExoPlayer 的 `setPlaybackSpeed` 音视频一起变速（音高由 Sonic 处理）；
+     * libVLC 的 `rate` 在部分解封装器上只作用于视频轨甚至被忽略 —— 这是 libVLC 的行为，
+     * 走兜底内核的片源（WMV/RMVB 等）可能只有画面变快。
+     */
+    fun setSpeed(rate: Float) {
+        val target = rate.coerceIn(MIN_RATE, MAX_RATE)
+        main.post {
+            val vlc = vlcPlayer
+            if (vlc != null) {
+                runCatching { vlc.rate = target }
+                log("变速: ${target}×（libVLC 内核）")
+                return@post
+            }
+            runCatching { player?.setPlaybackSpeed(target) }
+            log("变速: ${target}×")
+        }
+    }
+
     fun toggle() {
         main.post {
             if (vlcPlayer != null) {
@@ -783,5 +804,9 @@ class LocalVideoPlayer(
 
         /** 重挂渲染面之后再等多久还没画面就判定放不出来。 */
         const val VLC_NO_VOUT_GIVEUP_MS = 6000L
+
+        /** 变速允许的范围：长按快进用得到 3×，留点余量；低于 0.25× 基本等于暂停。 */
+        const val MIN_RATE = 0.25f
+        const val MAX_RATE = 4.0f
     }
 }
