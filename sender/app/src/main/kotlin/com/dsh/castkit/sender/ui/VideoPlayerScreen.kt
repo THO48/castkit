@@ -64,7 +64,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
@@ -74,6 +76,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -113,7 +116,23 @@ private val PlayerEdgePadding = 16.dp
 private const val COMPACT_HEIGHT_THRESHOLD_DP = 480
 
 /** 紧凑版进度条的触摸行高：比常规的 48dp 矮一点，横屏下省出来的高度很关键。 */
-private val COMPACT_SCRUB_HEIGHT = 40.dp
+private val COMPACT_SCRUB_HEIGHT = 32.dp
+
+/**
+ * 播放页浮层文字的投影。
+ *
+ * 顶栏/底栏改成**全透明**之后，白字是直接压在画面上的 —— 亮场景里没有底就没有对比度。
+ * 用一层黑色投影代替整条 scrim 垫底（字幕的通行做法）：保住可读性，又不会退回成"黑板条"。
+ * 阴影本身不占布局，所以不会把那 9 成屏高又吃回去。
+ */
+private val OverlayTextShadow = Shadow(
+    color = Color.Black.copy(alpha = 0.75f),
+    offset = Offset(0f, 1f),
+    blurRadius = 7f,
+)
+
+/** 浮层文字：套上 [OverlayTextShadow]。 */
+private fun TextStyle.onOverlay(): TextStyle = copy(shadow = OverlayTextShadow)
 
 /** 播放页记住的方向 → Android 的方向常量。用 `SENSOR_*` 保留同方向内正反都能翻。 */
 private fun PlayerOrientation.toActivityInfo(): Int = when (this) {
@@ -505,7 +524,7 @@ fun VideoPlayerScreen(
                     },
                     modifier = Modifier.padding(
                         start = PlayerEdgePadding,
-                        top = CastKitSpacing.space2,
+                        top = CastKitSpacing.space1,
                     ),
                 )
             }
@@ -529,7 +548,7 @@ fun VideoPlayerScreen(
                     onClick = { if (casting) onStopCast() else showDeviceDialog = true },
                     modifier = Modifier.padding(
                         start = PlayerEdgePadding,
-                        bottom = CastKitSpacing.space2,
+                        bottom = CastKitSpacing.space1,
                     ),
                 )
 
@@ -603,7 +622,7 @@ internal fun PlayerTopBar(title: String, onBack: () -> Unit) {
         titleContent = {
             Text(
                 text = title,
-                style = CastKitTheme.typography.titleSmall,
+                style = CastKitTheme.typography.titleSmall.onOverlay(),
                 color = ImmersiveColors.OnScrim,
                 maxLines = 1,
                 overflow = TextOverflow.Clip,
@@ -611,7 +630,7 @@ internal fun PlayerTopBar(title: String, onBack: () -> Unit) {
                 modifier = Modifier.basicMarquee(),
             )
         },
-        containerColor = ImmersiveColors.Scrim,
+        containerColor = Color.Transparent,
         contentColor = ImmersiveColors.OnScrim,
     )
 }
@@ -643,13 +662,13 @@ internal fun PlayerBottomControls(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            // 顺序要紧：**先 background 再 navigationBarsPadding**。
-            // 反过来的话 scrim 只铺到内容区，手势条那一条没被盖住，底部会漏出一条底色。
-            .background(ImmersiveColors.Scrim)
+            // 背景**全透明**：整条 scrim 底在横屏下会变成一大块压暗画面的黑板
+            // （横屏 384dp 高里，顶栏+底栏+两个悬浮钮能占到 9 成），所以这里不铺底，
+            // 只留 navigationBarsPadding 保证控件不被手势条压住。
             .navigationBarsPadding()
             .padding(
                 horizontal = PlayerEdgePadding,
-                vertical = if (compact) CastKitSpacing.space2 else CastKitSpacing.space3,
+                vertical = if (compact) CastKitSpacing.space1 else CastKitSpacing.space2,
             ),
         verticalArrangement = Arrangement.spacedBy(
             if (compact) CastKitSpacing.space1 else CastKitSpacing.space2,
@@ -663,7 +682,7 @@ internal fun PlayerBottomControls(
             ) {
                 Text(
                     text = formatTimeCode(positionMs),
-                    style = CastKitTheme.typography.labelSmall,
+                    style = CastKitTheme.typography.labelSmall.onOverlay(),
                     color = ImmersiveColors.TextSecondary,
                 )
                 ScrubBar(
@@ -678,7 +697,7 @@ internal fun PlayerBottomControls(
                 )
                 Text(
                     text = formatTimeCode(durationMs),
-                    style = CastKitTheme.typography.labelSmall,
+                    style = CastKitTheme.typography.labelSmall.onOverlay(),
                     color = ImmersiveColors.TextSecondary,
                 )
             }
@@ -697,12 +716,12 @@ internal fun PlayerBottomControls(
             ) {
                 Text(
                     text = formatTimeCode(positionMs),
-                    style = CastKitTheme.typography.labelMedium,
+                    style = CastKitTheme.typography.labelMedium.onOverlay(),
                     color = ImmersiveColors.TextSecondary,
                 )
                 Text(
                     text = formatTimeCode(durationMs),
-                    style = CastKitTheme.typography.labelMedium,
+                    style = CastKitTheme.typography.labelMedium.onOverlay(),
                     color = ImmersiveColors.TextSecondary,
                 )
             }

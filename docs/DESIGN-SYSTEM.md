@@ -101,7 +101,7 @@
 
 | 名称 | 值 | 用途 |
 |---|---|---|
-| `ImmersiveScrim` | `#B3000000` | 播放器顶栏 / 底栏半透明黑底（沿用现有值） |
+| `ImmersiveScrim` | `#B3000000` | 播放页**悬浮钮胶囊**、长按快进提示的底（顶栏/底栏已改用全透明，见 §8） |
 | `ImmersiveOnScrim` | `#FFFFFF` | 控制图标与主文字 |
 | `ImmersiveTextSecondary` | `#B3FFFFFF` | 时间码、次要提示（70% 白） |
 | `ScrubTrackInactive` | `#4DFFFFFF` | 进度条未播轨（30% 白） |
@@ -498,9 +498,22 @@
 不这么分的话横屏底栏约 172dp、加上悬浮钮与手势条内边距能到 262dp，会和顶部那条（顶栏 + 切方向钮 ≈ 154dp）叠在一起——
 真机上表现为两排悬浮钮直接压住。
 
-**底栏 modifier 顺序**固定为 `fillMaxWidth → background(Scrim) → navigationBarsPadding → padding`。
-`background` 必须在 `navigationBarsPadding` **之前**，否则 scrim 只铺到内容区，
-手势条（小白条）那一条没被盖住，屏幕最底下会漏出一条没压暗的底色。
+**顶栏与底栏都是全透明**（`Color.Transparent`，不铺任何 scrim 垫底）。
+
+横屏手机只有 384dp 高，实测各段占位是：系统状态栏 45dp + 标题栏 64dp + 旋转钮 48dp + 投屏钮 48dp
++ 底栏（进度条行 32dp + 控制排 48dp + 内边距）≈ 92dp + 手势条 20dp ——
+**加起来约 349dp / 384dp ≈ 91%**。铺 scrim 的话这两条就是压掉九成屏高的两块黑板，
+所以改成只留控件本身浮在画面上。高度上能压的只有内边距与进度条触摸行（48→32dp），
+再往下就是 48dp 最小点击区，压不动了 —— 真正的解法是去掉背景色而不是继续缩高度。
+
+代价是白字直接压在画面上，亮场景没有对比度，所以**浮层文字统一加一层黑色投影**
+（`OverlayTextShadow`：`#BF000000`、offset y+1dp、blur 7dp，字幕的通行做法）：
+`TextStyle.onOverlay()` 套在标题与两处时间码上。投影不占布局，不会把高度吃回来。
+悬浮钮与播放/暂停键本来就自带胶囊/实心圆底，不受影响。
+
+因为底栏不再有背景，历史上那条「`background` 必须排在 `navigationBarsPadding` 之前，
+否则手势条那一条盖不住」的约束**已经消失**；`navigationBarsPadding` 保留，
+作用是让控制排不被手势条压住（而不是让 scrim 铺满）。
 
 **系统栏跟随控制栏显隐**：系统栏（顶部状态栏 + 底部手势条）的可见性**绑定 `overlayVisible`**——
 播放器控制栏出现时系统栏一起显示，控制栏收起时才一起隐藏。
