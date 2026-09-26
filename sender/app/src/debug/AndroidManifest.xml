@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  仅 debug 源集的清单。AGP 会把它与 src/main/AndroidManifest.xml 合并，
+  release 包不包含本文件。
+  目的：给设计系统的组件画廊一个人工可点的入口，不用等第三步页面迁移完成，
+  就能在真机/模拟器上直接看新组件的实际渲染。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <activity
+            android:name=".ui.GalleryActivity"
+            android:exported="true"
+            android:label="CastKit 组件画廊">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

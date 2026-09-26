@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      浅色窗口主题。深色对应项必须同时存在于 values-night/themes.xml。
+
+      只把 Compose 层改成深色是不够的：窗口主题如果恒为 Light，
+      系统切到深色时窗口底色、状态栏图标仍按浅色走，会在启动闪屏和圆角边角处露底。
+    -->
+    <style name="Theme.CastKitSender" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

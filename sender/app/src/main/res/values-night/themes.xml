@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      深色窗口主题。与 values/themes.xml 成对：Miuix 的 MiuixTheme 默认色是 lightColorScheme()，
+      所以窗口这层也得跟着系统走，否则深色模式下闪屏与边角仍是浅色。
+      windowLightStatusBar=false 让状态栏图标在深色底上转为浅色。
+    -->
+    <style name="Theme.CastKitSender" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

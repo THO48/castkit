@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CastKit 发送端</string>
+
+    <string name="cast_idle">未投屏</string>
+    <string name="cast_connecting">连接接收端…</string>
+    <string name="cast_running">投屏中</string>
+    <string name="cast_reconnecting">重连中…</string>
+    <string name="cast_error">错误：%1$s</string>
+
+    <string name="action_start">开始投屏</string>
+    <string name="action_stop">停止投屏</string>
+    <string name="cast_page_video_running">正在投送视频，可在播放页停止</string>
+    <string name="cast_page_video_hint">请到「视频」页选一个视频开投</string>
+    <string name="action_done">完成</string>
+
+    <string name="section_target">接收端</string>
+    <string name="target_host">接收端 IP</string>
+    <string name="target_port">端口</string>
+    <string name="section_video">画面参数</string>
+    <string name="label_resolution">分辨率</string>
+    <string name="label_custom_size">自定义宽 × 高</string>
+    <string name="label_bitrate">码率</string>
+    <string name="label_fps">帧率</string>
+    <string name="label_stats">实时状态</string>
+
+    <string name="stats_resolution">分辨率 %1$d × %2$d</string>
+    <string name="stats_bitrate">码率 %1$s</string>
+    <string name="stats_fps">帧率 %1$.1f</string>
+
+    <string name="notification_channel">投屏中</string>
+    <string name="notification_title">CastKit 正在投屏</string>
+    <string name="notification_text">%1$s · %2$d×%3$d · %4$s</string>
+    <string name="notification_stop">停止</string>
+
+    <string name="err_no_projection">未获得录屏授权</string>
+    <string name="err_bad_address">接收端地址无效</string>
+    <string name="err_connect_failed">无法连接接收端：%1$s</string>
+
+    <string name="label_keep_aspect">保持屏幕比例</string>
+    <string name="label_keep_aspect_desc">按手机屏幕比例推导分辨率，避免画面被拉伸变形（推荐）</string>
+    <!-- 删掉 CUSTOM 之后，这个开关是唯一决定「720p 到底指什么」的东西，说明必须写死语义 -->
+    <string name="label_keep_aspect_desc_on">开启：档位数字表示<b>短边</b>，长边按本机屏幕比例推导；关闭：按标准 16:9 投出</string>
+    <string name="label_custom_short_side">短边像素</string>
+    <string name="label_custom_short_side_desc">长边按屏幕比例自动计算，例如短边 720 → 720×1600</string>
+    <string name="effective_size">实际投出：%1$d×%2$d</string>
+    <string name="keep_aspect_off_warning">已关闭比例保持：预设按 16:9 字面值，非 16:9 屏幕会出现拉伸</string>
+    <string name="target_auto_scan">自动搜索设备</string>
+    <string name="target_refresh">重新搜索</string>
+    <string name="target_searching">正在搜索同一 Wi-Fi 下的接收端…请确认接收端已开启「接收 CastKit 发送端投屏」</string>
+    <string name="target_manual_show">手动输入地址</string>
+    <string name="target_manual_hide">收起手动输入</string>
+
+    <!-- 投屏方式 -->
+    <string name="section_mode">投屏方式</string>
+    <string name="mode_mirror">镜像屏幕</string>
+    <string name="mode_video">投视频文件</string>
+    <string name="mode_mirror_desc">把手机屏幕整屏镜像到接收端（需要录屏授权）。接收端屏幕比例与手机不同时会留黑边。</string>
+    <string name="mode_video_desc">只把选中的视频交给接收端，用接收端原生播放器播放：原始画质、有声音、可拖进度，且不需要录屏授权。</string>
+
+    <!-- 投视频文件 -->
+    <string name="section_video_file">视频文件</string>
+    <string name="action_browse_videos">浏览本机视频</string>
+    <string name="action_pick_video">用系统文件选择器</string>
+    <string name="action_start_video">投到接收端</string>
+    <string name="action_stop_video">停止投送</string>
+    <string name="video_none_picked">还没有选择视频文件</string>
+    <string name="video_size_unknown">大小未知</string>
+    <string name="video_mode_hint">接收端需开启「接收 CastKit 发送端投屏」。投送期间请保持本应用在后台运行，别让系统清理掉。</string>
+
+    <string name="video_notification_title">CastKit 正在投送视频</string>
+    <string name="video_preparing">准备投送…</string>
+    <string name="video_serving">正在共享《%1$s》</string>
+    <string name="video_playing">接收端播放中：%1$s</string>
+    <string name="video_control_lost">与接收端的控制连接已断开（正在播放的画面不受影响）</string>
+    <string name="err_no_video">没有选择视频文件</string>
+
+    <!-- 顶栏与无障碍标签（原先这些字面量硬编码在 Kotlin 里） -->
+    <string name="screen_title">CastKit</string>
+    <string name="tab_cast">投屏</string>
+    <string name="tab_video">视频</string>
+    <string name="measured_stats">实测 %1$.1f Mbps · %2$.0f fps</string>
+    <string name="title_local_videos">本机视频</string>
+    <string name="cd_selected">已选择</string>
+    <string name="cd_up_level">上一级</string>
+    <string name="cd_sort">排序</string>
+    <string name="cd_view_settings">显示设置</string>
+    <string name="cd_rescan">重新扫描</string>
+    <string name="cd_back">返回</string>
+
+    <!-- 自定义分辨率 -->
+    <string name="label_custom_width">宽</string>
+    <string name="label_custom_height">高</string>
+
+    <!-- 视频库 -->
+    <string name="empty_no_videos">没有扫描到视频。确认本机有视频文件，或点右上角重新扫描。</string>
+    <string name="empty_no_videos_title">暂无视频</string>
+    <string name="cd_more">更多</string>
+    <string name="empty_folder">这个文件夹里没有视频</string>
+    <string name="partial_access_hint">你只授权了部分视频，这里只显示被允许的那些。</string>
+    <string name="action_pick_more">选择更多</string>
+    <string name="action_use_system_picker">改用系统文件选择器</string>
+    <string name="nomedia_need_all_files">已开启 .nomedia 显示，但还缺「所有文件访问」权限，这部分目录扫不到（点右上角「显示」去授权）。</string>
+    <string name="browser_folder_count">文件夹 · %1$d</string>
+    <string name="browser_video_count">视频 · %1$d</string>
+    <string name="nomedia_switch_title">显示 .nomedia 文件夹</string>
+    <string name="nomedia_need_grant">需要「所有文件访问」权限，点此去授权</string>
+    <string name="nomedia_hint">这些目录 MediaStore 不索引，默认看不到</string>
+    <string name="permission_title">需要读取本机视频的权限</string>
+    <string name="permission_desc">授予权限后可以直接按文件夹浏览本机视频、看缩略图和时长，点一下就能投到接收端。</string>
+    <string name="action_grant">授予权限</string>
+
+    <!-- 播放页 -->
+    <string name="action_play">播放</string>
+    <string name="action_pause">暂停</string>
+    <string name="action_to_landscape">切到横屏</string>
+    <string name="action_to_portrait">切到竖屏</string>
+    <string name="action_cast">投屏</string>
+    <!-- 播放器底栏的图标标签（2 字，11sp）。±10 秒不加标签：图标本身带 "10" -->
+    <string name="player_label_landscape">横屏</string>
+    <string name="player_label_portrait">竖屏</string>
+    <string name="player_label_stop">停止</string>
+    <string name="player_forward_10">前进 10 秒</string>
+    <string name="player_rewind_10">后退 10 秒</string>
+    <!-- 投送中沉浸态（替代本机 Surface 的死帧） -->
+    <string name="casting_immersive_title">正在投送到</string>
+    <string name="casting_immersive_desc">本机已暂停，这里的播放与进度条控制的是接收端</string>
+    <!-- Snackbar 文案（替代常驻提示语） -->
+    <string name="snackbar_cast_started">已开始投送到 %1$s，本机已暂停</string>
+    <string name="snackbar_cast_stopped">已停止投送，进度已对齐到 %1$s</string>
+    <string name="snackbar_orientation">切到横/竖屏只改本机方向，接收端画面不受影响</string>
+    <string name="casting_label">投送中</string>
+    <string name="cast_receiver">接收端</string>
+    <string name="hint_orientation">「切到横/竖屏」只改本机方向，接收端画面不受影响</string>
+    <string name="casting_remote_hint">正在投送到 %1$s · 本机已暂停，这里的播放/进度条控制的是接收端</string>
+
+    <!-- 设备选择弹窗 -->
+    <string name="dialog_pick_device">选择投屏设备</string>
+    <string name="dialog_pick_device_summary_empty">点设备名即可开始投送</string>
+    <string name="dialog_pick_device_summary">点设备名直接开始投送</string>
+    <string name="dialog_no_receivers">没有发现设备。请确认接收端已打开、并且和本机在同一个 Wi-Fi。</string>
+
+    <!-- 视频库菜单 -->
+    <string name="sort_dialog_title">排序方式</string>
+    <string name="sort_by_field">按%1$s</string>
+    <string name="sort_to_desc">倒序</string>
+    <string name="sort_to_asc">正序</string>
+    <string name="sort_current_asc">当前：正序（从小到大）</string>
+    <string name="sort_current_desc">当前：倒序（从大到小）</string>
+    <string name="icon_size_format">%1$s · 文件夹 %2$d 列 / 视频 %3$d 列</string>
+    <string name="folder_count">%1$d 个视频</string>
+    <string name="folder_count_with_subfolder">%1$d 个视频 · %2$d 个子文件夹</string>
+</resources>
