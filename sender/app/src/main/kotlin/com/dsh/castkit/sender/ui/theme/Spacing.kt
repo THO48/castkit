@@ -102,6 +102,12 @@ object CastKitSizes {
     /** 播放/暂停主按钮直径。 */
     val playerPrimaryButton = 64.dp
 
+    /**
+     * 矮屏（横屏手机）用的主按钮直径。
+     * 横屏可用高度只有 384dp，底栏每省一点都很关键，否则底栏会和顶栏那一条叠上。
+     */
+    val playerPrimaryButtonCompact = 56.dp
+
     /** 播放/暂停主按钮里的图标本体。 */
     val playerPrimaryGlyph = 32.dp
 

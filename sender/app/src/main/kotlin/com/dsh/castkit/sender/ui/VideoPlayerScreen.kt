@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.net.Uri
+import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
@@ -75,6 +76,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -102,11 +104,23 @@ import kotlin.math.roundToInt
 /** 播放页两端的横向留白。 */
 private val PlayerEdgePadding = 16.dp
 
+/**
+ * 矮屏（横屏手机）判据：可用高度低于这个值就用紧凑底栏。
+ * 实测横屏手机 384dp、竖屏手机 853dp、平板横屏远大于它，所以这条只命中"横屏手机"。
+ */
+private const val COMPACT_HEIGHT_THRESHOLD_DP = 480
+
+/** 紧凑版进度条的触摸行高：比常规的 48dp 矮一点，横屏下省出来的高度很关键。 */
+private val COMPACT_SCRUB_HEIGHT = 40.dp
+
 /** 播放页记住的方向 → Android 的方向常量。用 `SENSOR_*` 保留同方向内正反都能翻。 */
 private fun PlayerOrientation.toActivityInfo(): Int = when (this) {
     PlayerOrientation.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
     PlayerOrientation.PORTRAIT -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
 }
+
+/** 诊断用日志标签（同 `LocalVideoPlayer` 的做法：排查真机问题全靠 logcat）。 */
+private const val TAG = "VideoPlayerScreen"
 
 /** 长按快进的倍速。3× 是主流视频 App 的常见值：够快，又不至于完全看不清内容。 */
 private const val FAST_RATE = 3f
@@ -202,7 +216,13 @@ fun VideoPlayerScreen(
     // 用 LaunchedEffect 而不是塞进下面 DisposableEffect 的 body：后者是在组合期跑副作用，
     // 而 requestedOrientation 会触发配置变更，放在组合之后更稳。
     LaunchedEffect(Unit) {
-        Prefs.playerOrientation(context)?.let { activity?.requestedOrientation = it.toActivityInfo() }
+        val saved = Prefs.playerOrientation(context)
+        Log.d(
+            TAG,
+            "进播放页：方向偏好=$saved activity=${activity != null} " +
+                "screenHeightDp=${configuration.screenHeightDp}",
+        )
+        saved?.let { activity?.requestedOrientation = it.toActivityInfo() }
     }
 
     DisposableEffect(Unit) {
@@ -502,6 +522,8 @@ fun VideoPlayerScreen(
                     onPlayPause = { if (remote) onRemoteToggle() else vm.toggle() },
                     onSeekForward = { seekBy(SEEK_STEP_MS) },
                     onNext = onNext,
+                    // 矮屏（横屏手机）用紧凑版，否则底栏 + 悬浮钮会顶到顶栏那一条上去
+                    compact = configuration.screenHeightDp < COMPACT_HEIGHT_THRESHOLD_DP,
                 )
             }
         }
@@ -564,7 +586,14 @@ internal fun PlayerTopBar(title: String, onBack: () -> Unit) {
     )
 }
 
-/** 底栏：进度条 + 时间码 + 五格控制排。 */
+/**
+ * 底栏：进度条 + 时间码 + 五格控制排。
+ *
+ * @param compact 矮屏（横屏手机，实测只有 384dp 高）用的紧凑版：
+ *        时间码挪到进度条**同一行的两端**、内边距与间距收紧、主按钮缩到 56dp。
+ *        不做这个的话底栏约 172dp、加上悬浮钮和手势条内边距能到 262dp，
+ *        会跟顶部那条（顶栏 + 切方向钮 ≈ 154dp）叠在一起 —— 实测两排悬浮钮直接压住了。
+ */
 @Composable
 internal fun PlayerBottomControls(
     positionMs: Long,
@@ -579,42 +608,79 @@ internal fun PlayerBottomControls(
     onPlayPause: () -> Unit,
     onSeekForward: () -> Unit,
     onNext: () -> Unit,
+    compact: Boolean = false,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .navigationBarsPadding()
+            // 顺序要紧：**先 background 再 navigationBarsPadding**。
+            // 反过来的话 scrim 只铺到内容区，手势条那一条没被盖住，底部会漏出一条底色。
             .background(ImmersiveColors.Scrim)
-            .padding(horizontal = PlayerEdgePadding, vertical = CastKitSpacing.space3),
-        verticalArrangement = Arrangement.spacedBy(CastKitSpacing.space2),
+            .navigationBarsPadding()
+            .padding(
+                horizontal = PlayerEdgePadding,
+                vertical = if (compact) CastKitSpacing.space2 else CastKitSpacing.space3,
+            ),
+        verticalArrangement = Arrangement.spacedBy(
+            if (compact) CastKitSpacing.space1 else CastKitSpacing.space2,
+        ),
     ) {
-        ScrubBar(
-            positionMs = positionMs,
-            durationMs = durationMs,
-            onScrub = onScrub,
-            onScrubFinished = onScrubFinished,
-        )
+        if (compact) {
+            // 紧凑版：时间码与进度条并排一行，省掉整个时间码行的高度
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = formatTimeCode(positionMs),
+                    style = CastKitTheme.typography.labelSmall,
+                    color = ImmersiveColors.TextSecondary,
+                )
+                ScrubBar(
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    onScrub = onScrub,
+                    onScrubFinished = onScrubFinished,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(COMPACT_SCRUB_HEIGHT)
+                        .padding(horizontal = CastKitSpacing.space2),
+                )
+                Text(
+                    text = formatTimeCode(durationMs),
+                    style = CastKitTheme.typography.labelSmall,
+                    color = ImmersiveColors.TextSecondary,
+                )
+            }
+        } else {
+            ScrubBar(
+                positionMs = positionMs,
+                durationMs = durationMs,
+                onScrub = onScrub,
+                onScrubFinished = onScrubFinished,
+            )
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = formatTimeCode(positionMs),
-                style = CastKitTheme.typography.labelMedium,
-                color = ImmersiveColors.TextSecondary,
-            )
-            Text(
-                text = formatTimeCode(durationMs),
-                style = CastKitTheme.typography.labelMedium,
-                color = ImmersiveColors.TextSecondary,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = formatTimeCode(positionMs),
+                    style = CastKitTheme.typography.labelMedium,
+                    color = ImmersiveColors.TextSecondary,
+                )
+                Text(
+                    text = formatTimeCode(durationMs),
+                    style = CastKitTheme.typography.labelMedium,
+                    color = ImmersiveColors.TextSecondary,
+                )
+            }
         }
 
-        // 五格：上一个视频 | 后退10 | 播放暂停(64dp) | 前进10 | 下一个视频。
+        // 五格：上一个视频 | 后退10 | 播放暂停 | 前进10 | 下一个视频。
         // 「切方向」在顶栏下方、「投屏」在本栏左上方，都是悬浮钮，不在这排里。
-        // 宽度核算：48×4 + 64 = 256dp，加两端 16dp 留白 = 288dp，
+        // 宽度核算（常规档）：48×4 + 64 = 256dp，加两端 16dp 留白 = 288dp，
         // 在 360dp 窄屏上仍有余量，所以不需要缩小图标或收紧间距。
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -635,7 +701,11 @@ internal fun PlayerBottomControls(
                 onClick = onSeekBack,
             )
 
-            PlayerPlayPauseButton(playing = playing, onClick = onPlayPause)
+            PlayerPlayPauseButton(
+                playing = playing,
+                onClick = onPlayPause,
+                size = if (compact) CastKitSizes.playerPrimaryButtonCompact else CastKitSizes.playerPrimaryButton,
+            )
 
             PlayerIconSlot(
                 icon = Icons.Filled.Forward10,
@@ -879,12 +949,16 @@ private fun PlayerIconSlot(
     }
 }
 
-/** 播放/暂停：视觉主体，64dp 实心圆 + 32dp 图标。 */
+/** 播放/暂停：视觉主体，默认 64dp 实心圆 + 32dp 图标（矮屏紧凑版 56dp）。 */
 @Composable
-private fun PlayerPlayPauseButton(playing: Boolean, onClick: () -> Unit) {
+private fun PlayerPlayPauseButton(
+    playing: Boolean,
+    onClick: () -> Unit,
+    size: Dp = CastKitSizes.playerPrimaryButton,
+) {
     Box(
         modifier = Modifier
-            .size(CastKitSizes.playerPrimaryButton)
+            .size(size)
             .clip(CircleShape)
             .background(ImmersiveColors.Accent)
             .clickable(onClick = onClick),
