@@ -5,10 +5,10 @@
 横竖屏与画中画。
 
 ```
-iPhone / iPad / Mac ──AirPlay（原生，无需安装 App）──┐
-                                                   │
-Android + CastKit 发送端 ──LANCast v1（TCP/H.264）──┼─→ 接收端 App ──→ 全屏播放
-                                                   │
+iPhone / iPad / Mac ──AirPlay（原生）───────────────┐
+                                                    │
+Android + CastKit 发送端 ──LANCast v1（TCP/H.264）──┼─ → 接收端 App ──→ 全屏播放
+                                                    │
 Android + CastKit 发送端 ──HTTP 原始视频文件────────┘   （「投视频文件」：接收端原生播放器直取原文件）
 ```
 
