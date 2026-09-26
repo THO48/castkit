@@ -16,17 +16,18 @@ Android + CastKit 发送端 ──HTTP 原始视频文件───────�
 
 ## 下载
 
-最新版 **v1.0.3**：
+最新版 **v1.0.4**：
 
 | 文件 | 装在 | 大小 |
 |---|---|---|
-| [`CastKit-Sender-1.0.2-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.3/CastKit-Sender-1.0.2-debug.apk) | **发送端** —— 要投出去的设备 | 239.3 MB |
-| [`CastKit-Receiver-0.0.31-castkit.3-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.3/CastKit-Receiver-0.0.31-castkit.3-debug.apk) | **接收端** —— 显示画面的设备 | 82.0 MB |
+| [`CastKit-Sender-1.0.3-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.4/CastKit-Sender-1.0.3-debug.apk) | **发送端** —— 要投出去的设备 | 239.3 MB |
+| [`CastKit-Receiver-0.0.31-castkit.3-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.4/CastKit-Receiver-0.0.31-castkit.3-debug.apk) | **接收端** —— 显示画面的设备 | 82.0 MB |
 
 全部版本见 [Releases](https://github.com/THO48/castkit/releases)。
 
 | 版本 | 要点 |
 |---|---|
+| [v1.0.4](https://github.com/THO48/castkit/releases/tag/v1.0.4) | 文件列表补扫媒体库不收录的格式：**`.vob` / `.rmvb` 现在列得出来也投得出去** |
 | [v1.0.3](https://github.com/THO48/castkit/releases/tag/v1.0.3) | 发送端文件列表：**WMV/AVI/MPG 这类片源补上时长、分辨率与缩略图**（系统解析不了的交给 libVLC） |
 | [v1.0.2](https://github.com/THO48/castkit/releases/tag/v1.0.2) | 两端都补上 libVLC 兜底内核：**WMV/ASF 现在发送端能放、也能投** |
 | [v1.0.1](https://github.com/THO48/castkit/releases/tag/v1.0.1) | 接收端换成实心 `cast` 图标、改为从源码完整重建、包体 37.6→30.2 MB |
@@ -143,6 +144,10 @@ bash tools/install-apk.sh receiver # 导出到 Download/DSHA 供安装
   - **排序**：按时间 / 名称 / 文件大小 / 视频时长，各支持正序与倒序，设置会记住
   - **预览大小**：四档可调，文件夹与视频分别控制每行个数（默认文件夹 3 列、视频 2 列）
   - **.nomedia 目录**：可选显示（这些目录 MediaStore 不索引，需要「所有文件访问」权限）
+  - **媒体库不收录的格式也能列出来**：`.vob`、`.rmvb` 这类文件 MediaStore 根本不收（前者只进
+    `Files` 表且 MIME 是 `application/octet-stream`，后者压根不入库），光靠媒体库查询是看不见的。
+    文件系统补扫会把按扩展名的白名单文件捞回来，与媒体库按路径去重后并入列表，所以它们跟普通视频
+    一样有缩略图、时长和分辨率。这一步同样需要「所有文件访问」权限。
 
 **投视频文件**
 
@@ -183,9 +188,11 @@ bash tools/install-apk.sh receiver # 导出到 Download/DSHA 供安装
 - **发送端的「自定义分辨率」档位已移除**：分辨率只保留 `720p / 1080p / 1440p / 跟随本机` 四档
   （见 [`docs/DESIGN-SYSTEM.md`](docs/DESIGN-SYSTEM.md) 的偏差清单）。接收端的「自定义宽高」不受影响。
 - 内置视频库需要 `READ_MEDIA_VIDEO`（Android 13+）才能扫描；拒绝时仍可用系统文件选择器。
-- 显示 `.nomedia` 目录需要「所有文件访问」权限（`MANAGE_EXTERNAL_STORAGE`）：这些目录 MediaStore
-  完全不索引，只能靠文件系统遍历，Android 11+ 上没这个权限读不到。这类条目的时长与缩略图不在媒体库里，
-  由 `MediaMetadataRetriever` / `ThumbnailUtils` 直接读文件得到（界面按需补探 + 少量批量预探）。
+- 显示 `.nomedia` 目录、以及列出 `.vob` / `.rmvb` 这类媒体库不收录的格式，都需要「所有文件访问」权限
+  （`MANAGE_EXTERNAL_STORAGE`）：前者 MediaStore 整棵子树跳过，后者干脆不收，都只能靠文件系统遍历，
+  Android 11+ 上没这个权限读不到 —— 这是平台限制。这类条目的时长与缩略图不在媒体库里，
+  由 `MediaMetadataRetriever` / `ThumbnailUtils` 直接读文件得到，两者都拿不到时再交给 libVLC
+  （界面按需补探 + 少量批量预探）。
 - **缩略图三级缓存**：内存 LRU → 磁盘缓存（`cacheDir/thumb_cache`，800 张上限、LRU 淘汰）→ 现抽帧；
   同时**限制并发解码为 2**、条目滚出屏幕即中断抽帧（`CancellationSignal`），所以快速拖动不会因
   一秒内冒出十几个抽帧任务而卡顿。

@@ -200,8 +200,12 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 两段式加载。由页面在 `LaunchedEffect(permission, includeNoMedia, refreshTick)` 里调用。
      *
-     * 第一段：MediaStore（快）+ `.nomedia` 磁盘缓存 → 立刻出内容；
-     * 第二段：缓存过期或被强制刷新时，后台全盘重扫 `.nomedia`，期间 `refining = true`。
+     * 第一段：MediaStore（快）+ 文件系统补扫的磁盘缓存 → 立刻出内容；
+     * 第二段：缓存过期或被强制刷新时，后台重扫，期间 `refining = true`。
+     *
+     * 补扫**不再**由「显示 .nomedia 文件夹」开关决定是否执行 —— 它同时负责把媒体库
+     * 不收录的格式（`.vob`/`.rmvb`）捞回来，那些文件用户并没有藏，应该直接显示。
+     * 开关只决定 `.nomedia` 子树那一桶要不要并进列表。
      */
     suspend fun load() {
         if (permission == LibraryPermissionState.Denied) return
@@ -212,30 +216,34 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         allFilesGranted = VideoLibrary.canReadAllFiles(context)
 
         val store = withContext(Dispatchers.IO) { VideoLibrary.loadFromMediaStore(context) }
-        val cachedExtras = if (includeNoMedia && allFilesGranted) {
-            withContext(Dispatchers.IO) { VideoLibrary.cachedNoMedia(context) }
+        val cachedExtras = if (allFilesGranted) {
+            withContext(Dispatchers.IO) { VideoLibrary.cachedExtraVideos(context) }
         } else {
-            emptyList()
+            VideoLibrary.ExtraVideos()
         }
-        allVideos = mergeVideos(store, cachedExtras)
+        allVideos = mergeVideos(store, extrasToAdd(cachedExtras))
         VideoLibraryCache.merged = allVideos
         loading = false
 
         val cacheStale =
-            VideoLibrary.noMediaCacheAgeMs(context) > VideoLibrary.NOMEDIA_TTL_MS
-        if (includeNoMedia && allFilesGranted && (forced || cacheStale)) {
+            VideoLibrary.extraCacheAgeMs(context) > VideoLibrary.EXTRA_TTL_MS
+        if (allFilesGranted && (forced || cacheStale)) {
             refining = true
-            val extras = withContext(Dispatchers.IO) { VideoLibrary.scanNoMediaFolders(context) }
-            if (extras.isNotEmpty() || forced) {
-                withContext(Dispatchers.IO) { VideoLibrary.saveNoMediaCache(context, extras) }
+            val extras = withContext(Dispatchers.IO) { VideoLibrary.scanExtraVideos(context) }
+            if (!extras.isEmpty || forced) {
+                withContext(Dispatchers.IO) { VideoLibrary.saveExtraCache(context, extras) }
             }
-            allVideos = mergeVideos(store, extras)
+            allVideos = mergeVideos(store, extrasToAdd(extras))
             VideoLibraryCache.merged = allVideos
             refining = false
         }
     }
 
-    /** 合并媒体库与 `.nomedia` 条目（按路径去重，媒体库优先）。 */
+    /** 补扫结果里该并进列表的部分：媒体库漏掉的总是要，`.nomedia` 那一桶看开关。 */
+    private fun extrasToAdd(extra: VideoLibrary.ExtraVideos): List<VideoItem> =
+        if (includeNoMedia) extra.all else extra.libraryMissed
+
+    /** 合并媒体库与补扫条目（按路径去重，媒体库优先）。 */
     private fun mergeVideos(store: List<VideoItem>, extras: List<VideoItem>): List<VideoItem> {
         if (extras.isEmpty()) return store
         val known = store.mapTo(HashSet()) { it.key }

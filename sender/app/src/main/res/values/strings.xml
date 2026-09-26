@@ -100,12 +100,12 @@
     <string name="partial_access_hint">你只授权了部分视频，这里只显示被允许的那些。</string>
     <string name="action_pick_more">选择更多</string>
     <string name="action_use_system_picker">改用系统文件选择器</string>
-    <string name="nomedia_need_all_files">已开启 .nomedia 显示，但还缺「所有文件访问」权限，这部分目录扫不到（点右上角「显示」去授权）。</string>
+    <string name="nomedia_need_all_files">还缺「所有文件访问」权限：`.nomedia` 文件夹、以及 `.vob` / `.rmvb` 这类媒体库不收录的格式都扫不到（点右上角「显示」去授权）。</string>
     <string name="browser_folder_count">文件夹 · %1$d</string>
     <string name="browser_video_count">视频 · %1$d</string>
     <string name="nomedia_switch_title">显示 .nomedia 文件夹</string>
     <string name="nomedia_need_grant">需要「所有文件访问」权限，点此去授权</string>
-    <string name="nomedia_hint">这些目录 MediaStore 不索引，默认看不到</string>
+    <string name="nomedia_hint">这些目录 MediaStore 不索引，默认看不到；`.vob` / `.rmvb` 这类媒体库不收录的格式也要靠这个权限才扫得到</string>
     <string name="permission_title">需要读取本机视频的权限</string>
     <string name="permission_desc">授予权限后可以直接按文件夹浏览本机视频、看缩略图和时长，点一下就能投到接收端。</string>
     <string name="action_grant">授予权限</string>

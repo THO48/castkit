@@ -58,11 +58,12 @@ data class FolderEntry(
 )
 
 /**
- * 本机视频库（MediaStore + 可选的文件系统扫描），给「投视频文件」的内置浏览器用。
+ * 本机视频库（MediaStore + 文件系统补扫），给「投视频文件」的内置浏览器用。
  *
  * - 常规部分走 MediaStore（需要 `READ_MEDIA_VIDEO`），能拿到时长/宽高/缩略图；
- * - `.nomedia` 目录**不在 MediaStore 里**（扫描器会跳过），只能用文件系统遍历补，
- *   而 Android 11+ 上访问这些文件需要「所有文件访问」权限，拿不到时这部分为空。
+ * - MediaStore **漏掉的两类**靠文件系统补扫（见 [ExtraVideos]）：`.nomedia` 目录下的，
+ *   以及媒体库压根不认的格式（实测 `.vob`、`.rmvb`）。两者都需要「所有文件访问」权限，
+ *   拿不到时这部分为空 —— 这是平台限制，不是可以绕过的。
  * - 目录结构由每条的相对路径推导，天然是树：默认只列最上级，进去再看子目录。
  */
 /**
@@ -85,7 +86,9 @@ object VideoLibrary {
     private const val MAX_DURATION_PROBE = 60
 
     private val VIDEO_EXT = setOf(
-        "mp4", "m4v", "mkv", "webm", "ts", "mov", "avi", "flv", "3gp", "wmv", "mpg", "mpeg", "rmvb", "m2ts",
+        "mp4", "m4v", "mkv", "webm", "ts", "m2ts", "mts", "m2t", "mov", "avi",
+        "flv", "3gp", "3g2", "wmv", "asf", "mpg", "mpeg", "vob", "rmvb", "rm",
+        "ogv", "ogm", "divx", "f4v", "wtv",
     )
 
     private val collection: Uri
@@ -153,22 +156,48 @@ object VideoLibrary {
     }
 
     /**
-     * 文件系统扫描含 `.nomedia` 的文件夹（这些目录 MediaStore 看不到）。
+     * 文件系统补扫的结果，分两桶。
+     *
+     * 为什么要分：`.nomedia` 目录是用户**主动藏起来**的，得由「显示 .nomedia 文件夹」开关控制；
+     * 而 [libraryMissed] 是**媒体库自己不认**的文件 —— 用户没藏它们，只是 MediaStore 不收录，
+     * 应该跟普通视频一样直接显示。实测两类典型：
+     *
+     * | 文件 | 媒体库里长什么样 |
+     * |---|---|
+     * | `.vob` | 只进 `Files` 表，`mime_type=application/octet-stream`，`Video` 表里没有 |
+     * | `.rmvb` | 压根不入库 |
+     *
+     * 这两种接收端**都能播**，问题只在发送端列不出来。
+     */
+    data class ExtraVideos(
+        val libraryMissed: List<VideoItem> = emptyList(),
+        val noMedia: List<VideoItem> = emptyList(),
+    ) {
+        val isEmpty: Boolean get() = libraryMissed.isEmpty() && noMedia.isEmpty()
+        val all: List<VideoItem> get() = libraryMissed + noMedia
+    }
+
+    /**
+     * 文件系统补扫含 `.nomedia` 的文件夹，以及**媒体库不收录**的视频文件。
+     *
+     * 整个外部存储只走一遍：按扩展名（[VIDEO_EXT]）收文件，MediaStore 已经收录的靠路径去重
+     * （去重在调用方做），所以这里不做 MIME 判断。收进哪一桶由「是否在 `.nomedia` 子树下」决定。
      *
      * 需要「所有文件访问」权限；没有权限时多数目录 `listFiles()` 会返回 null，结果自然为空。
      * 限制深度与时间预算，避免在超大存储上卡太久。
      */
-    fun scanNoMediaFolders(
+    fun scanExtraVideos(
         context: Context,
         budgetMs: Long = 12_000L,
         maxDepth: Int = 10,
-    ): List<VideoItem> {
+    ): ExtraVideos {
         if (!canReadAllFiles(context)) {
-            Log.i(TAG, "没有「所有文件访问」权限，跳过 .nomedia 扫描")
-            return emptyList()
+            Log.i(TAG, "没有「所有文件访问」权限，跳过文件系统补扫")
+            return ExtraVideos()
         }
-        val root = Environment.getExternalStorageDirectory() ?: return emptyList()
-        val out = ArrayList<VideoItem>()
+        val root = Environment.getExternalStorageDirectory() ?: return ExtraVideos()
+        val missed = ArrayList<VideoItem>()
+        val noMedia = ArrayList<VideoItem>()
         val deadline = System.currentTimeMillis() + budgetMs
         var probed = 0
 
@@ -184,17 +213,16 @@ object VideoLibrary {
             val noMediaHere = insideNoMedia ||
                 children.any { it.isFile && it.name.equals(".nomedia", ignoreCase = true) }
 
-            if (noMediaHere) {
-                children.filter { it.isFile && it.extension.lowercase() in VIDEO_EXT }.forEach { f ->
-                    // 不在媒体库里，时长只能自己探；限制数量与时间预算，其余的等界面按需再探
-                    val duration = if (probed < MAX_DURATION_PROBE && System.currentTimeMillis() < deadline) {
-                        probed++
-                        probeDurationMs(f)
-                    } else {
-                        0L
-                    }
-                    out += fileItem(root, f, duration)
+            children.filter { it.isFile && it.extension.lowercase() in VIDEO_EXT }.forEach { f ->
+                // 不在媒体库里，时长只能自己探；限制数量与时间预算，其余的等界面按需再探
+                val duration = if (probed < MAX_DURATION_PROBE && System.currentTimeMillis() < deadline) {
+                    probed++
+                    probeDurationMs(f)
+                } else {
+                    0L
                 }
+                val item = fileItem(root, f, duration)
+                if (noMediaHere) noMedia += item else missed += item
             }
             children.filter { it.isDirectory && !it.name.startsWith(".") && it.name != "Android" }
                 .forEach { walk(it, depth + 1, noMediaHere) }
@@ -203,10 +231,14 @@ object VideoLibrary {
         try {
             walk(root, 0, insideNoMedia = false)
         } catch (e: Throwable) {
-            Log.w(TAG, ".nomedia 扫描失败: ${e.message}")
+            Log.w(TAG, "文件系统补扫失败: ${e.message}")
         }
-        Log.i(TAG, ".nomedia 扫描到 ${out.size} 个视频")
-        return out
+        Log.i(
+            TAG,
+            "文件系统补扫：普通目录命中 ${missed.size} 个、.nomedia 目录下 ${noMedia.size} 个" +
+                "（还要由调用方按路径跟媒体库去重，去重后剩下的才是真正新增的）",
+        )
+        return ExtraVideos(missed, noMedia)
     }
 
     /** 逐个文件探时长（MediaMetadataRetriever），失败返回 0。 */
@@ -248,30 +280,36 @@ object VideoLibrary {
             true
         }
 
-    /** 汇总：MediaStore + 可选的 .nomedia 扫描结果（按路径去重）。 */
-    fun loadAll(context: Context, includeNoMedia: Boolean): List<VideoItem> {
+    /**
+     * 汇总：MediaStore + 文件系统补扫（按路径去重，媒体库优先）。
+     *
+     * 媒体库漏掉的（`.vob`/`.rmvb` 这类）**总是**并进来；`.nomedia` 目录下的由
+     * [includeNoMedia] 控制。第二个参数以前是 `includeNoMedia`，语义变了所以一并改名。
+     */
+    fun loadAll(context: Context, showNoMediaFolders: Boolean): List<VideoItem> {
         val store = loadFromMediaStore(context)
-        if (!includeNoMedia) return store
+        val extra = scanExtraVideos(context)
         val known = store.mapTo(HashSet()) { it.key }
-        val extra = scanNoMediaFolders(context).filter { it.key !in known }
-        return store + extra
+        val add = (if (showNoMediaFolders) extra.all else extra.libraryMissed)
+            .filter { it.key !in known }
+        return store + add
     }
 
     // ---------- 缓存：让"重开应用"几乎瞬间出内容 ----------
     //
     // MediaStore 查询很快（几十到几百毫秒），慢的是 .nomedia 的全盘遍历，
-    // 所以只把 .nomedia 那部分落盘缓存；媒体库部分每次现查即可。
+    // 所以只把文件系统补扫那部分落盘缓存；媒体库部分每次现查即可。
 
-    /** .nomedia 扫描结果的磁盘缓存文件名。 */
-    private const val CACHE_FILE = "videolib_nomedia.tsv"
+    /** 文件系统补扫结果的磁盘缓存文件名。 */
+    private const val CACHE_FILE = "videolib_extra.tsv"
 
     /** 缓存多久算新鲜（超过就该后台重扫）。 */
-    const val NOMEDIA_TTL_MS = 5 * 60 * 1000L
+    const val EXTRA_TTL_MS = 5 * 60 * 1000L
 
     private fun cacheFile(context: Context) = File(context.cacheDir, CACHE_FILE)
 
-    /** 缓存里 .nomedia 条目的年龄；没有缓存返回 Long.MAX_VALUE。 */
-    fun noMediaCacheAgeMs(context: Context): Long {
+    /** 缓存里补扫条目的年龄；没有缓存返回 Long.MAX_VALUE。 */
+    fun extraCacheAgeMs(context: Context): Long {
         val f = cacheFile(context)
         return if (f.exists()) {
             (System.currentTimeMillis() - f.lastModified()).coerceAtLeast(0)
@@ -280,21 +318,26 @@ object VideoLibrary {
         }
     }
 
-    fun cachedNoMedia(context: Context): List<VideoItem> {
+    fun cachedExtraVideos(context: Context): ExtraVideos {
         val f = cacheFile(context)
-        if (!f.exists()) return emptyList()
-        val root = Environment.getExternalStorageDirectory() ?: return emptyList()
-        return try {
-            f.readLines().drop(1).mapNotNull { line ->
+        if (!f.exists()) return ExtraVideos()
+        val root = Environment.getExternalStorageDirectory() ?: return ExtraVideos()
+        val missed = ArrayList<VideoItem>()
+        val noMedia = ArrayList<VideoItem>()
+        try {
+            f.readLines().drop(1).forEach { line ->
                 val p = line.split('\t')
-                if (p.size < 5) return@mapNotNull null
+                if (p.size < 5) return@forEach
                 val folder = p[0]
                 val name = p[1]
                 val size = p[2].toLongOrNull() ?: 0L
                 val mtime = p[3].toLongOrNull() ?: 0L
                 val duration = p[4].toLongOrNull() ?: 0L
+                // 第 6 列是「是否在 .nomedia 子树下」。老缓存只有 5 列，
+                // 而老缓存里存的全是 .nomedia 条目，所以缺列时按 1 处理。
+                val inNoMedia = (p.getOrNull(5)?.toIntOrNull() ?: 1) != 0
                 val file = File(root, if (folder.isEmpty()) name else "$folder/$name")
-                VideoItem(
+                val item = VideoItem(
                     uri = Uri.fromFile(file),
                     name = name,
                     folderPath = folder,
@@ -304,29 +347,36 @@ object VideoLibrary {
                     width = 0,
                     height = 0,
                 )
+                if (inNoMedia) noMedia += item else missed += item
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "读取 .nomedia 缓存失败: ${e.message}")
-            emptyList()
+            Log.w(TAG, "读取文件系统补扫缓存失败: ${e.message}")
+            return ExtraVideos()
         }
+        return ExtraVideos(missed, noMedia)
     }
 
-    fun saveNoMediaCache(context: Context, items: List<VideoItem>) {
+    fun saveExtraCache(context: Context, extra: ExtraVideos) {
         try {
             cacheFile(context).writeText(
                 buildString {
                     append(System.currentTimeMillis()).append('\n')
-                    items.forEach { v ->
-                        // 顺带把界面已按需探到的时长一起存下来，下次直接就有角标
-                        val duration = maxOf(v.durationMs, VideoDurations.cached(v.uri))
-                        append(v.folderPath).append('\t').append(v.name).append('\t')
-                            .append(v.sizeBytes).append('\t').append(v.dateAddedSec).append('\t')
-                            .append(duration).append('\n')
+                    fun write(items: List<VideoItem>, inNoMedia: Boolean) {
+                        val flag = if (inNoMedia) 1 else 0
+                        items.forEach { v ->
+                            // 顺带把界面已按需探到的时长一起存下来，下次直接就有角标
+                            val duration = maxOf(v.durationMs, VideoDurations.cached(v.uri))
+                            append(v.folderPath).append('\t').append(v.name).append('\t')
+                                .append(v.sizeBytes).append('\t').append(v.dateAddedSec).append('\t')
+                                .append(duration).append('\t').append(flag).append('\n')
+                        }
                     }
+                    write(extra.libraryMissed, inNoMedia = false)
+                    write(extra.noMedia, inNoMedia = true)
                 },
             )
         } catch (e: Throwable) {
-            Log.w(TAG, "写 .nomedia 缓存失败: ${e.message}")
+            Log.w(TAG, "写文件系统补扫缓存失败: ${e.message}")
         }
     }
 
