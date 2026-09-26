@@ -85,6 +85,7 @@ import com.dsh.castkit.sender.ui.theme.CastKitMotion
 import com.dsh.castkit.sender.ui.theme.CastKitSizes
 import com.dsh.castkit.sender.ui.theme.CastKitSpacing
 import com.dsh.castkit.sender.ui.theme.ImmersiveColors
+import com.dsh.castkit.sender.ui.theme.PillShape
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
@@ -299,10 +300,35 @@ fun VideoPlayerScreen(
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.TopCenter),
         ) {
-            PlayerTopBar(
-                title = state.title.ifBlank { title },
-                onBack = onClose,
-            )
+            Column(modifier = Modifier.fillMaxWidth()) {
+                PlayerTopBar(
+                    title = state.title.ifBlank { title },
+                    onBack = onClose,
+                )
+                // 切横/竖屏贴在顶栏正下方（原来挤在底栏五格里，与播放控制抢注意力）
+                PlayerFloatingAction(
+                    icon = Icons.Filled.ScreenRotation,
+                    label = stringResource(
+                        if (isLandscape) R.string.action_to_portrait else R.string.action_to_landscape,
+                    ),
+                    text = stringResource(
+                        if (isLandscape) R.string.player_label_portrait else R.string.player_label_landscape,
+                    ),
+                    onClick = {
+                        activity?.requestedOrientation = if (isLandscape) {
+                            ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                        } else {
+                            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                        }
+                        // 只在第一次提示一次，之后不再打扰
+                        if (!orientationHintShown) orientationHintShown = true
+                    },
+                    modifier = Modifier.padding(
+                        start = PlayerEdgePadding,
+                        top = CastKitSpacing.space2,
+                    ),
+                )
+            }
         }
 
         AnimatedVisibility(
@@ -311,34 +337,39 @@ fun VideoPlayerScreen(
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
-            PlayerBottomControls(
-                positionMs = position,
-                durationMs = duration,
-                playing = playing,
-                isLandscape = isLandscape,
-                casting = casting,
-                onScrub = { scrubMs = it },
-                onScrubFinished = {
-                    val target = scrubMs
-                    if (target != null) {
-                        if (remote) onRemoteSeek(target) else vm.seekTo(target)
-                    }
-                    scrubMs = null
-                },
-                onSeekBack = { seekBy(-SEEK_STEP_MS) },
-                onSeekForward = { seekBy(SEEK_STEP_MS) },
-                onPlayPause = { if (remote) onRemoteToggle() else vm.toggle() },
-                onToggleOrientation = {
-                    activity?.requestedOrientation = if (isLandscape) {
-                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-                    } else {
-                        ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                    }
-                    // 只在第一次提示一次，之后不再打扰
-                    if (!orientationHintShown) orientationHintShown = true
-                },
-                onCast = { if (casting) onStopCast() else showDeviceDialog = true },
-            )
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // 投屏贴在底栏上方、靠左下角（Column 默认左对齐，给一个左侧内边距即可）
+                PlayerFloatingAction(
+                    icon = if (casting) Icons.Filled.Stop else Icons.Filled.Cast,
+                    label = stringResource(
+                        if (casting) R.string.action_stop_video else R.string.action_cast,
+                    ),
+                    text = if (casting) stringResource(R.string.player_label_stop) else null,
+                    active = casting,
+                    onClick = { if (casting) onStopCast() else showDeviceDialog = true },
+                    modifier = Modifier.padding(
+                        start = PlayerEdgePadding,
+                        bottom = CastKitSpacing.space2,
+                    ),
+                )
+
+                PlayerBottomControls(
+                    positionMs = position,
+                    durationMs = duration,
+                    playing = playing,
+                    onScrub = { scrubMs = it },
+                    onScrubFinished = {
+                        val target = scrubMs
+                        if (target != null) {
+                            if (remote) onRemoteSeek(target) else vm.seekTo(target)
+                        }
+                        scrubMs = null
+                    },
+                    onSeekBack = { seekBy(-SEEK_STEP_MS) },
+                    onSeekForward = { seekBy(SEEK_STEP_MS) },
+                    onPlayPause = { if (remote) onRemoteToggle() else vm.toggle() },
+                )
+            }
         }
 
         // 首次切方向时的说明（原本是常驻的一行字，现在只在需要时出现一次）
@@ -399,21 +430,17 @@ internal fun PlayerTopBar(title: String, onBack: () -> Unit) {
     )
 }
 
-/** 底栏：进度条 + 时间码 + 五格控制排。 */
+/** 底栏：进度条 + 时间码 + 三格控制排。 */
 @Composable
 internal fun PlayerBottomControls(
     positionMs: Long,
     durationMs: Long,
     playing: Boolean,
-    isLandscape: Boolean,
-    casting: Boolean,
     onScrub: (Long) -> Unit,
     onScrubFinished: () -> Unit,
     onSeekBack: () -> Unit,
     onSeekForward: () -> Unit,
     onPlayPause: () -> Unit,
-    onToggleOrientation: () -> Unit,
-    onCast: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -447,25 +474,14 @@ internal fun PlayerBottomControls(
             )
         }
 
-        // 五格：切方向 | 后退10 | 播放暂停(64dp) | 前进10 | 投屏
-        // 宽度核算：48×4 + 64 = 256dp，加两端 16dp 留白 = 288dp，
-        // 在 360dp 窄屏上仍有余量，所以不需要缩小图标或收紧间距。
+        // 只留播放本身需要的那三个：后退10 | 播放暂停(64dp) | 前进10。
+        // 「切方向」挪到顶栏下方、「投屏」挪到本栏左上方，都做成悬浮钮。
+        // SpaceBetween 在只有三格时正好把主按钮顶在正中，两侧等距。
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            PlayerIconSlot(
-                icon = Icons.Filled.ScreenRotation,
-                label = stringResource(
-                    if (isLandscape) R.string.action_to_portrait else R.string.action_to_landscape,
-                ),
-                text = stringResource(
-                    if (isLandscape) R.string.player_label_portrait else R.string.player_label_landscape,
-                ),
-                onClick = onToggleOrientation,
-            )
-
             // ±10 秒不加文字标签：Replay10 / Forward10 图标本身带 "10"
             PlayerIconSlot(
                 icon = Icons.Filled.Replay10,
@@ -480,15 +496,47 @@ internal fun PlayerBottomControls(
                 label = stringResource(R.string.player_forward_10),
                 onClick = onSeekForward,
             )
+        }
+    }
+}
 
-            PlayerIconSlot(
-                icon = if (casting) Icons.Filled.Stop else Icons.Filled.Cast,
-                label = stringResource(
-                    if (casting) R.string.action_stop_video else R.string.action_cast,
-                ),
-                text = if (casting) stringResource(R.string.player_label_stop) else null,
-                active = casting,
-                onClick = onCast,
+/**
+ * 悬浮操作钮：顶栏下方 / 底栏上方那种「单独一个」的操作。
+ *
+ * 与底栏里那排 [PlayerIconSlot] 同一套视觉语言（24dp 图标 + 可选小字），
+ * 区别是没有整条 scrim 垫底，所以自带一个胶囊形 scrim 背景 —— 否则压在亮画面上看不清。
+ */
+@Composable
+internal fun PlayerFloatingAction(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    text: String? = null,
+    active: Boolean = false,
+) {
+    Row(
+        modifier = modifier
+            .clip(PillShape)
+            .background(ImmersiveColors.Scrim)
+            .clickable(onClick = onClick)
+            .height(CastKitSizes.minTouchTarget)
+            .padding(horizontal = CastKitSpacing.space3),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(CastKitSpacing.space2),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = if (active) ImmersiveColors.Accent else ImmersiveColors.OnScrim,
+            modifier = Modifier.size(CastKitSizes.playerSecondaryGlyph),
+        )
+        if (text != null) {
+            Text(
+                text = text,
+                style = CastKitTheme.typography.labelSmall,
+                color = if (active) ImmersiveColors.Accent else ImmersiveColors.OnScrim,
+                maxLines = 1,
             )
         }
     }

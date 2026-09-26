@@ -17,6 +17,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -406,21 +409,34 @@ private fun PlayerComposition(casting: Boolean) {
         }
         Column(modifier = Modifier.align(Alignment.TopCenter)) {
             PlayerTopBar(title = "青海湖环湖骑行 4K.mp4", onBack = {})
+            // 悬浮钮在真机上是"顶栏下方左对齐 / 底栏上方左对齐"，
+            // 画廊里也要摆成一样，否则截图对比失去意义。
+            PlayerFloatingAction(
+                icon = Icons.Filled.ScreenRotation,
+                label = "切到横屏",
+                text = "横屏",
+                onClick = {},
+                modifier = Modifier.padding(start = 16.dp, top = 8.dp),
+            )
         }
         Column(modifier = Modifier.align(Alignment.BottomCenter)) {
+            PlayerFloatingAction(
+                icon = if (casting) Icons.Filled.Stop else Icons.Filled.Cast,
+                label = if (casting) "结束投送" else "投屏",
+                text = if (casting) "停止" else null,
+                active = casting,
+                onClick = {},
+                modifier = Modifier.padding(start = 16.dp, bottom = 8.dp),
+            )
             PlayerBottomControls(
                 positionMs = 252_000L,
                 durationMs = 754_000L,
                 playing = !casting,
-                isLandscape = false,
-                casting = casting,
                 onScrub = {},
                 onScrubFinished = {},
                 onSeekBack = {},
                 onSeekForward = {},
                 onPlayPause = {},
-                onToggleOrientation = {},
-                onCast = {},
             )
         }
     }
