@@ -10,7 +10,10 @@ activity-compose = "1.9.3"
 core-ktx = "1.15.0"
 datastore = "1.1.1"
 coroutines = "1.9.0"
-media3 = "1.11.0-beta01"
+media3 = "1.11.0"
+# CastKit: NextLib 给 Media3 补上 FFmpeg 软解（官方 media3-decoder-ffmpeg 只做音频）。
+# 版本号规则是 `<它对应的 media3 版本>-<nextlib 自己的版本>`，所以必须和上面的 media3 对齐。
+nextlib = "1.11.0-0.15.0"
 oboe = "1.9.3"
 
 [libraries]
@@ -38,6 +41,8 @@ media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", versi
 media3-exoplayer-hls = { group = "androidx.media3", name = "media3-exoplayer-hls", version.ref = "media3" }
 media3-transformer = { group = "androidx.media3", name = "media3-transformer", version.ref = "media3" }
 media3-ui-compose-material3 = { group = "androidx.media3", name = "media3-ui-compose-material3", version.ref = "media3" }
+# FFmpeg 软解（视频：H.264/HEVC/VP8/VP9/AV1；音频：AC3/EAC3/DTS/TrueHD/FLAC/…）
+nextlib-media3ext = { group = "io.github.anilbeesetti", name = "nextlib-media3ext", version.ref = "nextlib" }
 
 kotlinx-coroutines = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 

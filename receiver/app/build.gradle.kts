@@ -221,6 +221,8 @@ dependencies {
     implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.ui.compose.material3)
     implementation(libs.media3.transformer)
+    // CastKit: FFmpeg 软解（NextLib）—— 见 renderer/LanVideoPlayer.kt 顶部说明
+    implementation(libs.nextlib.media3ext)
     implementation(libs.kotlinx.coroutines)
     implementation(libs.oboe)
 

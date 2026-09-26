@@ -13,7 +13,8 @@
 | [OpenSSL](https://github.com/openssl/openssl) | `openssl-3.4.4` | Apache-2.0 | AES/SHA/RSA |
 | [viaduck/openssl-cmake](https://github.com/viaduck/openssl-cmake) | `4edd36a8` | MIT | Android 交叉编译 OpenSSL 的 CMake 封装 |
 | [google/oboe](https://github.com/google/oboe) | 1.9.3（Google Maven） | Apache-2.0 | 低延迟音频输出 |
-| Next Player（ExoPlayer/Media3） | 1.11.0-beta01 | Apache-2.0 | HLS/视频播放 |
+| Next Player（ExoPlayer/Media3） | 1.11.0（Google Maven） | Apache-2.0 | AirPlay HLS + 局域网视频播放（引擎） |
+| [anilbeesetti/nextlib](https://github.com/anilbeesetti/nextlib) | `nextlib-media3ext` 1.11.0-0.15.0（Maven Central） | **GPL-3.0** | 给 Media3 补 **FFmpeg 软解**（视频 H.264/HEVC/VP8/VP9/AV1；音频 AC3/EAC3/DTS/TrueHD/FLAC/…）。官方 `media3-decoder-ffmpeg` 只有音频，视频必须靠它 |
 
 > 由于 `receiver/` 链接了 GPL-3.0 的 UxPlay/playfair，**整个接收端 App 必须以 GPL-3.0 分发**；
 > 同时 FairPlay 相关代码是社区逆向实现，Apple 对未授权 AirPlay 接收端有 MFi 认证要求 —— 本工程仅用于
@@ -62,3 +63,18 @@
    上游 `minSdk = 24` 却只提供 `mipmap-anydpi-v26`，而 `anydpi-v26` 只在 API 26+ 生效 ——
    在 Android 7.0/7.1 上 `@mipmap/ic_launcher` 解析不到，桌面图标会是空白。
    这是上游就存在的问题，本次顺带修掉。
+10. **局域网「投视频文件」的播放引擎从系统 `MediaPlayer` 换成 Media3 ExoPlayer + NextLib FFmpeg**
+    （`renderer/LanVideoPlayer.kt`）。原因见该文件顶部注释，简要版：
+    - 系统 `MediaPlayer` 用的是安卓自带的 `MPEG4Extractor`，遇到病态容器时间基会**直接弃轨**
+      （实测日志 `MPEG4Extractor: track->timescale overflow`，容器 `mdhd` timescale = 2^31−1），
+      表现为"有声音、进度在走、画面全黑"，且**连视频解码器都不会创建**。
+      Media3 的 `Mp4Extractor` 是它自己重写的实现，时间戳走防溢出的 `Util.scaleLargeTimestamp`。
+    - 解码器侧仍可能吃不下：实测 1080i MBAFF 隔行流会被小米的 `c2.xring.avc.decoder`
+      **静默丢弃每一个 buffer**（`MediaCodec discarded an unknown buffer`），同样黑屏且不报错。
+      NextLib 把这个流交给了 FFmpeg 软解。
+    - 策略是**硬解优先 + 看门狗回退**：正常片源仍走硬解；起播后若干秒没渲染出第一帧才切 FFmpeg。
+      实测正常 MP4/MKV/FLV/TS/MOV 仍走硬解，只有隔行/MPEG-2 这类才落到软解。
+    - 代价：APK 增大约 7.9 MB（arm64-v8a 的 `libavcodec/swscale/avutil/swresample/media3ext`）。
+    - 已知仍不支持：**WMV/ASF 容器**。NextLib 只提供解码器、不提供解封装器，Media3 也没有
+      ASF 解封装器，所以会在解析阶段失败（`ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED`，
+      UI 会明确提示"接收端不认识这个容器格式"）。
