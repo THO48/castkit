@@ -16,18 +16,19 @@ Android + CastKit 发送端 ──HTTP 原始视频文件───────�
 
 ## 下载
 
-最新版 **v1.0.7**：
+最新版 **v1.0.8**：
 
 | 文件 | 装在 | 大小 |
 |---|---|---|
-| [`CastKit-Sender-1.0.7-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.7/CastKit-Sender-1.0.7-debug.apk) | **发送端** —— 要投出去的设备 | 239.3 MB |
-| [`CastKit-Receiver-0.0.31-castkit.4-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.7/CastKit-Receiver-0.0.31-castkit.4-debug.apk) | **接收端** —— 显示画面的设备 | 82.0 MB |
+| [`CastKit-Sender-1.0.8-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.8/CastKit-Sender-1.0.8-debug.apk) | **发送端** —— 要投出去的设备 | 239.3 MB |
+| [`CastKit-Receiver-0.0.31-castkit.4-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.8/CastKit-Receiver-0.0.31-castkit.4-debug.apk) | **接收端** —— 显示画面的设备 | 82.0 MB |
 
 全部版本见 [Releases](https://github.com/THO48/castkit/releases)。
 
 | 版本 | 要点 |
 |---|---|
-| [v1.0.7](https://github.com/THO48/castkit/releases/tag/v1.0.7) | 播放页**顶栏与底栏全透明**：横屏下不再糊满两块黑板，画面直通上下边缘，文字靠投影保可读性 |
+| [v1.0.8](https://github.com/THO48/castkit/releases/tag/v1.0.8) | 播放页**浮层控件改成白字/白图标 + 黑描边**：「切方向」「投屏」两个悬浮钮去掉胶囊底，底栏次级图标一并套描边 |
+| [v1.0.7](https://github.com/THO48/castkit/releases/tag/v1.0.7) | 播放页**顶栏与底栏全透明**：横屏下不再糊满两块黑板，画面直通上下边缘 |
 | [v1.0.6](https://github.com/THO48/castkit/releases/tag/v1.0.6) | 播放页**系统栏跟随控制栏显隐**：控制栏在时状态栏也显示，控制栏收起才一起隐藏 |
 | [v1.0.5](https://github.com/THO48/castkit/releases/tag/v1.0.5) | 播放页改造：底栏扩成五格（**上一个/下一个**）、**长按画面 3× 快进**、**左右半屏上下滑调系统亮度与系统音量**、记住手动切过的屏幕方向；修掉横屏下**悬浮钮重叠 / 底栏过高 / 底部漏一条底色** |
 | [v1.0.4](https://github.com/THO48/castkit/releases/tag/v1.0.4) | 文件列表补扫媒体库不收录的格式：**`.vob` / `.rmvb` 现在列得出来也投得出去** |
