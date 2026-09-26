@@ -16,12 +16,19 @@ Android + CastKit 发送端 ──HTTP 原始视频文件───────�
 
 ## 下载
 
+最新版 **v1.0.1**：
+
 | 文件 | 装在 | 大小 |
 |---|---|---|
-| [`CastKit-Sender-1.0.0-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.0/CastKit-Sender-1.0.0-debug.apk) | **发送端** —— 要投出去的设备 | 16.0 MB |
-| [`CastKit-Receiver-0.0.31-castkit.1-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.0/CastKit-Receiver-0.0.31-castkit.1-debug.apk) | **接收端** —— 显示画面的设备 | 30.2 MB |
+| [`CastKit-Sender-1.0.0-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.1/CastKit-Sender-1.0.0-debug.apk) | **发送端** —— 要投出去的设备 | 16.0 MB |
+| [`CastKit-Receiver-0.0.31-castkit.2-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.1/CastKit-Receiver-0.0.31-castkit.2-debug.apk) | **接收端** —— 显示画面的设备 | 30.2 MB |
 
 全部版本见 [Releases](https://github.com/THO48/castkit/releases)。
+
+| 版本 | 要点 |
+|---|---|
+| [v1.0.1](https://github.com/THO48/castkit/releases/tag/v1.0.1) | 接收端换成实心 `cast` 图标、改为从源码完整重建、包体 37.6→30.2 MB |
+| [v1.0.0](https://github.com/THO48/castkit/releases/tag/v1.0.0) | 首发：发送端 UI 全面迁移 Material 3 |
 
 **安装前必读**
 
