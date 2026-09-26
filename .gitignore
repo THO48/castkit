@@ -1,0 +1,49 @@
+# ============================================================================
+# CastKit —— 仓库排除规则
+# ============================================================================
+# 原则：只提交**源码、配置、文档、设计资产**；构建产物、机器相关文件、
+# 以及由脚本按需下载的第三方源码一律不进仓库。
+# ============================================================================
+
+# ---- 本机临时目录（构建缓存 / 模拟器日志 / 验证中间产物）----
+# 这些是开发过程中生成的，体积可达数 GB，绝不能进仓库
+.tmp-gh/
+.tmp-emu-logs/
+.tmp-android-home/
+.tmp-android-user-home/
+.tmp-backup/
+.tmp-home/
+.tmp-shot/
+.tmp-m2/
+
+# ---- Gradle / Kotlin / 构建产物 ----
+build/
+.gradle/
+.kotlin/
+*.apk
+*.aab
+*.ap_
+*.dex
+captures/
+
+# ---- Android Studio / IntelliJ ----
+.idea/
+*.iml
+*.iws
+*.ipr
+local.properties
+
+# ---- 验证输出 ----
+# out/ 里是 APK、uiautomator dump、逐次验证截图等本地产物。
+# 值得长期保留的截图已经整理进 docs/screenshots/。
+out/
+
+# ---- 由 tools/fetch-sources.sh 按需下载的第三方源码 ----
+# 见 docs/BUILD.md：首次构建前会拉取，不需要进版本库
+third_party/
+
+# ---- 系统垃圾 ----
+.DS_Store
+Thumbs.db
+*.log
+*.hprof

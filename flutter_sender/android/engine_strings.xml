@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 从原生发送端搬过来的引擎（cast/net/media 包）会用到的字符串资源。
+     Flutter 工程把 namespace 设为 com.dsh.castkit.sender，因此引擎代码里的 R.string.* 无需任何改动。 -->
+<resources>
+    <string name="err_bad_address">接收端地址无效</string>
+    <string name="err_connect_failed">无法连接接收端：%1$s</string>
+    <string name="err_no_projection">未获得录屏授权</string>
+    <string name="err_no_video">没有选择视频文件</string>
+    <string name="notification_stop">停止</string>
+    <string name="notification_text">%1$s · %2$d×%3$d · %4$s</string>
+    <string name="notification_title">CastKit 正在投屏</string>
+    <string name="video_control_lost">与接收端的控制连接已断开（正在播放的画面不受影响）</string>
+    <string name="video_notification_title">CastKit 正在投送视频</string>
+    <string name="video_playing">接收端播放中：%1$s</string>
+    <string name="video_preparing">准备投送…</string>
+    <string name="video_serving">正在共享《%1$s》</string>
+</resources>

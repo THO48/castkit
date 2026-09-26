@@ -1,0 +1,38 @@
+<!-- 复制到 Flutter 工程的 android/app/src/main/AndroidManifest.xml 里：
+     1) 这些 uses-permission 放到 <manifest> 下
+     2) application 标签加 android:name（通知渠道在引擎的 CastKitApp 里创建）
+     3) 两个 <service> 放到 <application> 内 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ===== 1) 权限 ===== -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 视频库 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <!-- 显示 .nomedia 目录需要（用户可在应用内跳转授权） -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <!-- ===== 2) application 上要加：android:name="com.dsh.castkit.sender.CastKitApp" ===== -->
+
+    <!-- ===== 3) 两个前台服务（引擎自带，别改名） ===== -->
+    <application>
+        <service
+            android:name="com.dsh.castkit.sender.cast.CastService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+        <service
+            android:name="com.dsh.castkit.sender.cast.VideoCastService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>
+</manifest>
