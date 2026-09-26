@@ -14,6 +14,9 @@ media3 = "1.11.0"
 # NextLib：给 Media3 补 FFmpeg 软解（官方 media3-decoder-ffmpeg 只有音频）。
 # 版本号规则是 `<它对应的 media3 版本>-<nextlib 自己的版本>`。
 nextlib = "1.11.0-0.15.0"
+# libVLC：Media3 与 NextLib 都没有 ASF/WMV 解封装器，这一层补上。
+# 接收端用同一版本，两端行为保持一致。
+vlc = "3.7.6"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "core-ktx" }
@@ -39,6 +42,8 @@ kotlinx-coroutines = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutin
 media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
 # FFmpeg 软解（视频：H.264/HEVC/VP8/VP9/AV1；音频：AC3/EAC3/DTS/TrueHD/FLAC/…）
 nextlib-media3ext = { group = "io.github.anilbeesetti", name = "nextlib-media3ext", version.ref = "nextlib" }
+# libVLC（LGPL-2.1）：自带 FFmpeg 解封装，兜住 Media3/NextLib 都不认识的容器（ASF/WMV/WMA）。
+libvlc = { group = "org.videolan.android", name = "libvlc-all", version.ref = "vlc" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

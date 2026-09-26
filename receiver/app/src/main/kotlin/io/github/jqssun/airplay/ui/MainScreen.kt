@@ -107,6 +107,7 @@ fun MainScreen(
             state = lanVideo,
             onSurfaceAvailable = viewModel::onLanVideoSurfaceAvailable,
             onSurfaceDestroyed = viewModel::onLanVideoSurfaceDestroyed,
+            onSurfaceHolder = viewModel::onLanVideoSurfaceHolder,
             onToggle = viewModel::toggleLanVideo,
             onSeek = viewModel::seekLanVideo,
             onStop = viewModel::stopLanVideo,

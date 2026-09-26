@@ -1,6 +1,7 @@
 package io.github.jqssun.airplay.ui
 
 import android.view.Surface
+import android.view.SurfaceHolder
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -55,6 +56,7 @@ fun LanVideoScreen(
     state: LanVideoState,
     onSurfaceAvailable: (Surface) -> Unit,
     onSurfaceDestroyed: (Surface) -> Unit,
+    onSurfaceHolder: (SurfaceHolder) -> Unit = {},
     onToggle: () -> Unit,
     onSeek: (Long) -> Unit,
     onStop: () -> Unit,
@@ -93,6 +95,7 @@ fun LanVideoScreen(
         VideoSurfaceView(
             onSurfaceAvailable = onSurfaceAvailable,
             onSurfaceDestroyed = onSurfaceDestroyed,
+            onSurfaceHolder = onSurfaceHolder,
             aspectRatio = if (state.aspect > 0f) state.aspect else 16f / 9f,
         )
 

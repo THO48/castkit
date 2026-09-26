@@ -3,6 +3,7 @@ package com.dsh.castkit.sender.ui
 import android.app.Application
 import android.net.Uri
 import android.view.Surface
+import android.view.SurfaceHolder
 import androidx.lifecycle.AndroidViewModel
 import com.dsh.castkit.sender.media.LocalPlaybackState
 import com.dsh.castkit.sender.media.LocalVideoPlayer
@@ -28,6 +29,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun play(uri: Uri, title: String) = player.play(uri, title)
 
     fun setSurface(surface: Surface?) = player.setSurface(surface)
+
+    /** libVLC 的 vout 需要渲染区域的实际像素尺寸，只有 SurfaceHolder 拿得到。 */
+    fun setSurfaceHolder(holder: SurfaceHolder) = player.setSurfaceHolder(holder)
 
     fun toggle() = player.toggle()
 

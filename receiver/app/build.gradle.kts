@@ -78,8 +78,8 @@ android {
         applicationId = "com.dsh.castkit.receiver"
         minSdk = 24
         targetSdk = 36
-        versionCode = 32
-        versionName = "0.0.31-castkit.2"
+        versionCode = 33
+        versionName = "0.0.31-castkit.3"
 
         externalNativeBuild {
             cmake {
@@ -223,6 +223,8 @@ dependencies {
     implementation(libs.media3.transformer)
     // CastKit: FFmpeg 软解（NextLib）—— 见 renderer/LanVideoPlayer.kt 顶部说明
     implementation(libs.nextlib.media3ext)
+    // CastKit: libVLC 兜底内核 —— Media3 与 NextLib 都没有 ASF 解封装器，WMV/WMA 靠它
+    implementation(libs.libvlc)
     implementation(libs.kotlinx.coroutines)
     implementation(libs.oboe)
 

@@ -16,19 +16,23 @@ Android + CastKit 发送端 ──HTTP 原始视频文件───────�
 
 ## 下载
 
-最新版 **v1.0.1**：
+最新版 **v1.0.2**：
 
 | 文件 | 装在 | 大小 |
 |---|---|---|
-| [`CastKit-Sender-1.0.0-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.1/CastKit-Sender-1.0.0-debug.apk) | **发送端** —— 要投出去的设备 | 16.0 MB |
-| [`CastKit-Receiver-0.0.31-castkit.2-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.1/CastKit-Receiver-0.0.31-castkit.2-debug.apk) | **接收端** —— 显示画面的设备 | 30.2 MB |
+| [`CastKit-Sender-1.0.1-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.2/CastKit-Sender-1.0.1-debug.apk) | **发送端** —— 要投出去的设备 | 239.3 MB |
+| [`CastKit-Receiver-0.0.31-castkit.3-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.2/CastKit-Receiver-0.0.31-castkit.3-debug.apk) | **接收端** —— 显示画面的设备 | 82.0 MB |
 
 全部版本见 [Releases](https://github.com/THO48/castkit/releases)。
 
 | 版本 | 要点 |
 |---|---|
+| [v1.0.2](https://github.com/THO48/castkit/releases/tag/v1.0.2) | 两端都补上 libVLC 兜底内核：**WMV/ASF 现在发送端能放、也能投** |
 | [v1.0.1](https://github.com/THO48/castkit/releases/tag/v1.0.1) | 接收端换成实心 `cast` 图标、改为从源码完整重建、包体 37.6→30.2 MB |
 | [v1.0.0](https://github.com/THO48/castkit/releases/tag/v1.0.0) | 首发：发送端 UI 全面迁移 Material 3 |
+
+> 包体在 v1.0.2 明显变大：为了兜住 WMV/ASF，两端都内置了 libVLC（每个 ABI 的
+> `libvlc.so` 约 46 MB）。已确认包体不是约束（500 MB 以内都可接受），所以**没有裁剪 ABI**。
 
 **安装前必读**
 

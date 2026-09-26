@@ -25,6 +25,7 @@ import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import android.view.Surface
+import android.view.SurfaceHolder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -618,6 +619,11 @@ class AirPlayService : LifecycleService(), RaopCallbackHandler, LogListener {
 
     fun clearLanVideoSurface(surface: Surface) {
         lanVideoPlayer.setSurface(null)
+    }
+
+    /** 渲染面的真实像素尺寸来源（libVLC 的 vout 必须拿到）。 */
+    fun setLanVideoSurfaceHolder(holder: SurfaceHolder) {
+        lanVideoPlayer.setSurfaceHolder(holder)
     }
 
     fun stopLanVideo() {

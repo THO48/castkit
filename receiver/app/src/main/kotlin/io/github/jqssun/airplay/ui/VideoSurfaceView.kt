@@ -18,14 +18,18 @@ fun VideoSurfaceView(
     aspectRatio: Float = 16f / 9f,
     // false = caller sizes the surface (content-scale modes)
     applyAspectRatio: Boolean = true,
+    // 需要知道渲染区域真实像素尺寸的调用方用这个（libVLC 的 vout 必须拿到正确窗口尺寸）
+    onSurfaceHolder: ((SurfaceHolder) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val callbacks = remember {
         object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
+                onSurfaceHolder?.invoke(holder)
                 onSurfaceAvailable(holder.surface)
             }
             override fun surfaceChanged(holder: SurfaceHolder, fmt: Int, w: Int, h: Int) {
+                onSurfaceHolder?.invoke(holder)
                 onSurfaceAvailable(holder.surface)
             }
             override fun surfaceDestroyed(holder: SurfaceHolder) {

@@ -54,8 +54,8 @@ android {
         applicationId = "com.dsh.castkit.sender"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
     }
 
     buildTypes {
@@ -98,6 +98,8 @@ dependencies {
     // NextLib 的 FFmpeg 解决"解码器吃不下"（隔行片源会被硬解器静默丢帧）。
     implementation(libs.media3.exoplayer)
     implementation(libs.nextlib.media3ext)
+    // libVLC：Media3 与 NextLib 都没有 ASF/WMV 解封装器，由它兜底（见 LocalVideoPlayer 里的兜底内核）。
+    implementation(libs.libvlc)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

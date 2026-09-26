@@ -15,6 +15,7 @@
 | [google/oboe](https://github.com/google/oboe) | 1.9.3（Google Maven） | Apache-2.0 | 低延迟音频输出 |
 | Next Player（ExoPlayer/Media3） | 1.11.0（Google Maven） | Apache-2.0 | AirPlay HLS + 局域网视频播放（引擎） |
 | [anilbeesetti/nextlib](https://github.com/anilbeesetti/nextlib) | `nextlib-media3ext` 1.11.0-0.15.0（Maven Central） | **GPL-3.0** | 给 Media3 补 **FFmpeg 软解**（视频 H.264/HEVC/VP8/VP9/AV1；音频 AC3/EAC3/DTS/TrueHD/FLAC/…）。官方 `media3-decoder-ffmpeg` 只有音频，视频必须靠它 |
+| [libVLC（VLC for Android）](https://code.videolan.org/videolan/vlc-android) | `org.videolan.android:libvlc-all` 3.7.6（Maven Central） | **LGPL-2.1**（`libvlc-all` 打包版；VLC 引擎部分为 LGPL-2.1+） | 兜底内核：自带 FFmpeg **解封装器**，播 NextLib / Media3 都打不开的容器（ASF/WMV/WMA） |
 
 > 由于 `receiver/` 链接了 GPL-3.0 的 UxPlay/playfair，**整个接收端 App 必须以 GPL-3.0 分发**；
 > 同时 FairPlay 相关代码是社区逆向实现，Apple 对未授权 AirPlay 接收端有 MFi 认证要求 —— 本工程仅用于
@@ -29,12 +30,15 @@
 | MediaProjection / MediaCodec（系统 API） | — | 采集与编码 |
 | [Next Player（ExoPlayer/Media3）](https://github.com/androidx/media) | 1.11.0（Google Maven） | Apache-2.0 | 本地视频播放引擎 |
 | [anilbeesetti/nextlib](https://github.com/anilbeesetti/nextlib) | `nextlib-media3ext` 1.11.0-0.15.0（Maven Central） | **GPL-3.0** | FFmpeg 软解（视频 H.264/HEVC/VP8/VP9/AV1；音频 AC3/EAC3/DTS/TrueHD/FLAC/…） |
+| [libVLC（VLC for Android）](https://code.videolan.org/videolan/vlc-android) | `org.videolan.android:libvlc-all` 3.7.6（Maven Central） | **LGPL-2.1** | 兜底内核：给本地播放补上 ASF/WMV 解封装（与接收端同一版本） |
 
 > **发送端现在也含 GPL-3.0 代码**（`nextlib-media3ext`）。发送端自身仍是本仓库自研代码，
 > 但分发带 NextLib 的 APK 时整体需按 **GPL-3.0** 处理；若将来要闭源分发，需要把 NextLib 换掉。
 > LANCast 协议与实现均为本项目自研（`docs/LANCast-v1.md`）。
-> NextLib 的 FFmpeg `.so` 按 ABI 各带一份且 AGP 默认**不压缩**打包，四个 ABI 合计约 34 MB，
-> 所以发送端 APK 从 16.8 MB 涨到 52.7 MB。
+> NextLib 的 FFmpeg `.so` 按 ABI 各带一份且 AGP 默认**不压缩**打包，四个 ABI 合计约 34 MB。
+> 再叠加 libVLC（4 个 ABI 合计约 201 MB 未压缩），发送端 APK 现在约 239 MB ——
+> 已确认「不超过 500 MB 可接受」，所以没有做 ABI 裁剪；若要瘦身，优先砍 `x86/x86_64`
+> （真机都是 arm，x86 只在模拟器上用）。
 
 ## 启动图标（两个 App 共用一套）
 
@@ -81,6 +85,17 @@
     - 策略是**硬解优先 + 看门狗回退**：正常片源仍走硬解；起播后若干秒没渲染出第一帧才切 FFmpeg。
       实测正常 MP4/MKV/FLV/TS/MOV 仍走硬解，只有隔行/MPEG-2 这类才落到软解。
     - 代价：APK 增大约 7.9 MB（arm64-v8a 的 `libavcodec/swscale/avutil/swresample/media3ext`）。
-    - 已知仍不支持：**WMV/ASF 容器**。NextLib 只提供解码器、不提供解封装器，Media3 也没有
-      ASF 解封装器，所以会在解析阶段失败（`ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED`，
-      UI 会明确提示"接收端不认识这个容器格式"）。
+11. **再加一层 libVLC 兜底内核**（`renderer/LanVideoPlayer.kt`），专治 ExoPlayer + NextLib 都打不开的容器：
+    - NextLib 只提供解码器、不提供解封装器（源码里开了 `--enable-avformat`，但发布出的 AAR 不带
+      `libavformat.so`），Media3 也没有 ASF 解封装器 —— 所以 **WMV/ASF/WMA 会在解析阶段就失败**
+      （`ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED`）。libVLC 自带 FFmpeg 解封装，一次全兜住。
+    - 策略：**ExoPlayer 优先**。只有它报「容器/编码不认识」时才切 libVLC，从当前进度接着播；
+      已实测的 MP4/MKV/AVI/FLV/TS/PS/MOV/FC2 路径完全不受影响（仍走原来的硬解/FFmpeg 软解）。
+    - 代价：arm64-v8a 的 `libvlc.so` + `libvlcjni.so` 约 46 MB，接收端 APK 30.2 MB → 82 MB。
+    - 坑（已修，值得记）：libVLC 的 vout 必须用 `setWindowSize()` 拿到**渲染面的真实像素尺寸**。
+      给成屏幕尺寸（1440×3200）而 SurfaceView 只有 1440×810 时它**不报任何错**：照样解码、
+      日志里 `Received first picture`、进度正常走，但画面按 1440×3200 画布居中排版，
+      SurfaceView 只显示其中一条 —— 表现就是**全黑**。尺寸只能从 `SurfaceHolder.getSurfaceFrame()`
+      拿（`Surface` 自己查不到），所以 UI 层把 `SurfaceHolder` 一路传到了播放器。
+    - 另一个坑：libVLC 的 access 模块里**没有 `content://`**（日志 `no access modules matched`），
+      发送端本地播 MediaStore 文件时必须先 `openFileDescriptor` 再用 fd 建 `Media`。

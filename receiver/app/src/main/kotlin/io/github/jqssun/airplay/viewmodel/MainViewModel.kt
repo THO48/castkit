@@ -6,6 +6,7 @@ import android.content.Intent
 import android.media.AudioManager
 import android.os.SystemClock
 import android.view.Surface
+import android.view.SurfaceHolder
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -546,6 +547,11 @@ class MainViewModel @Inject constructor(app: Application) : AndroidViewModel(app
 
     fun onLanVideoSurfaceDestroyed(surface: Surface) {
         service?.clearLanVideoSurface(surface)
+    }
+
+    /** libVLC 的 vout 需要渲染区域的实际像素尺寸，只有 SurfaceHolder 拿得到。 */
+    fun onLanVideoSurfaceHolder(holder: SurfaceHolder) {
+        service?.setLanVideoSurfaceHolder(holder)
     }
 
     fun toggleLanVideo() {

@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.Surface
+import android.view.SurfaceHolder
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -18,6 +19,10 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.DecoderManager
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.DecoderMode
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
+import org.videolan.libvlc.LibVLC
+import org.videolan.libvlc.Media
+import org.videolan.libvlc.interfaces.IVLCVout
+import org.videolan.libvlc.MediaPlayer as VlcMediaPlayer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -93,8 +98,28 @@ class LanVideoPlayer(
     /** 运行时解码器选择器（NextLib）。必须与 player 一对一，且在 prepare 之前 attach。 */
     private var decoderManager: DecoderManager? = null
 
+    /** libVLC 兜底内核（懒创建：只有 ExoPlayer 处理不了时才初始化，避免白吃内存）。 */
+    private var libVlc: LibVLC? = null
+    private var vlcPlayer: VlcMediaPlayer? = null
+
+    /** 本次播放是否已经试过 libVLC —— 只兜底一次，避免两个内核来回弹。 */
+    private var vlcTried = false
+
+    /** libVLC 是否已经出过画（收到 Vout 事件）。实测有概率起播后一直不出画，靠看门狗兜。 */
+    private var vlcFirstVout = false
+    private var vlcVoutRetry = 0
+    private var vlcWatchdog: Runnable? = null
+
+    /** 兜底时需要用它重新起播，所以要记住当前片源。 */
+    private var currentUrl: String? = null
+    private var currentTitle: String = ""
+
     @Volatile
     private var surface: Surface? = null
+
+    /** 渲染区域真实像素尺寸的唯一来源（libVLC 的 vout 需要，Surface 本身查不到）。 */
+    @Volatile
+    private var surfaceHolder: SurfaceHolder? = null
 
     private var ticker: Runnable? = null
     private var watchdog: Runnable? = null
@@ -119,8 +144,234 @@ class LanVideoPlayer(
     fun setSurface(s: Surface?) {
         surface = s
         main.post {
-            runCatching { player?.setVideoSurface(s) }
+            val vlc = vlcPlayer
+            if (vlc != null) {
+                // libVLC 换 Surface 必须 detach -> set -> attach，直接 set 可能不生效
+                runCatching { vlc.vlcVout.detachViews() }
+                if (s != null) {
+                    runCatching { vlc.vlcVout.setVideoSurface(s, surfaceHolder) }
+                    runCatching { vlc.vlcVout.attachViews() }
+                    applyVlcWindowSize(vlc.vlcVout)
+                }
+            } else {
+                runCatching { player?.setVideoSurface(s) }
+            }
         }
+    }
+
+    /**
+     * 渲染区域的实际像素尺寸只能从 SurfaceHolder 拿。
+     * 拿到后如果 libVLC 已经在跑，立刻把窗口尺寸纠正过来。
+     */
+    fun setSurfaceHolder(holder: SurfaceHolder) {
+        surfaceHolder = holder
+        main.post {
+            val vlc = vlcPlayer ?: return@post
+            if (runCatching { vlc.vlcVout.areViewsAttached() }.getOrDefault(false)) {
+                applyVlcWindowSize(vlc.vlcVout)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // libVLC 兜底内核
+    //
+    // 为什么需要：Media3 与 NextLib **都没有 ASF 解封装器**（NextLib 源码里开了
+    // --enable-avformat，但发布出的 AAR 不带 libavformat.so），而 NextLib 的 MIME
+    // 白名单又不含 WMV/WMA、解码类还是包级私有 —— 所以 WMV/WMA 既解不出来也接不上。
+    // libVLC 自带 FFmpeg 的解封装器，一次把这类容器全兜住。
+    //
+    // 策略：ExoPlayer 优先（已实测的路径不动），只有它报"容器/编码不认识"时才切过来。
+    // ------------------------------------------------------------------
+
+    private fun useVlc(): Boolean = vlcPlayer != null
+
+    /** ExoPlayer 处理不了时切到 libVLC，从当前进度接着播。 */
+    private fun switchToVlc(url: String, title: String, startMs: Long) {
+        cancelWatchdog()
+        stopTicker()
+        vlcFirstVout = false
+        vlcVoutRetry = 0
+        // 拆掉 ExoPlayer 这一套
+        runCatching { decoderManager?.detach() }
+        decoderManager = null
+        runCatching { player?.setVideoSurface(null) }
+        runCatching { player?.release() }
+        player = null
+
+        val vlc = try {
+            libVlc ?: LibVLC(context, VLC_ARGS).also { libVlc = it }
+        } catch (e: Throwable) {
+            onLog("libVLC 初始化失败: ${e.message}")
+            fail("接收端无法播放该视频")
+            return
+        }
+        val mp = try {
+            VlcMediaPlayer(vlc)
+        } catch (e: Throwable) {
+            onLog("libVLC 播放器创建失败: ${e.message}")
+            fail("接收端无法播放该视频")
+            return
+        }
+        vlcPlayer = mp
+        mp.setEventListener { event -> onVlcEvent(event) }
+
+        val media = Media(vlc, Uri.parse(url)).apply {
+            // 硬件解码优先；WMV3/VC-1 没有硬解时 libVLC 会自己回落软解
+            runCatching { setHWDecoderEnabled(true, false) }
+        }
+        mp.media = media
+        media.release()
+
+        val vout = mp.vlcVout
+        surface?.let { runCatching { vout.setVideoSurface(it, surfaceHolder) } }
+        runCatching { vout.attachViews() }
+        // 必须告诉 vout 渲染窗口多大：只用 setVideoSurface 的话 libVLC 不知道该往哪块区域输出，
+        // 表现就是 playing=true、进度在走、但画面全黑（实测踩过）。
+        applyVlcWindowSize(vout)
+        _state.value = _state.value.copy(buffering = true, playing = false, title = title)
+        mp.play()
+        if (startMs > 0) runCatching { mp.time = startMs }
+        onLog("已切到 libVLC 兜底播放")
+        scheduleVlcWatchdog(VLC_NO_VOUT_RETRY_MS)
+        startTicker()
+    }
+
+    /**
+     * 「libVLC 起播了但一直不出画」的看门狗。
+     *
+     * 这不是理论问题：实测同一份片源同一台机器，多次里会撞上「libVLC 日志显示
+     * `Received first picture`、vout 也建好了，但屏幕上全黑」——典型的
+     * 「vout 挂到了一个已经失效的渲染面」。重挂一次就好，所以这里主动重挂一次再判死。
+     */
+    private fun scheduleVlcWatchdog(delayMs: Long) {
+        cancelVlcWatchdog()
+        val r = object : Runnable {
+            override fun run() {
+                vlcWatchdog = null
+                val mp = vlcPlayer ?: return
+                if (vlcFirstVout) return
+                if (!_state.value.playing) {
+                    // 还没真正起播（缓冲中），给它时间
+                    scheduleVlcWatchdog(2000L)
+                    return
+                }
+                val s = surface
+                if (vlcVoutRetry == 0 && s != null) {
+                    vlcVoutRetry = 1
+                    onLog("libVLC 起播后没有出画，重新挂一次渲染面")
+                    runCatching { mp.vlcVout.detachViews() }
+                    runCatching { mp.vlcVout.setVideoSurface(s, surfaceHolder) }
+                    runCatching { mp.vlcVout.attachViews() }
+                    applyVlcWindowSize(mp.vlcVout)
+                    scheduleVlcWatchdog(VLC_NO_VOUT_GIVEUP_MS)
+                    return
+                }
+                // 只有确认**确实有视频轨**才敢判死；纯音频片源本来就不会有 Vout
+                val track = runCatching { mp.currentVideoTrack }.getOrNull()
+                if (track != null && track.width > 0) {
+                    onLog("libVLC 重挂渲染面后仍然没有画面")
+                    _state.value = _state.value.copy(
+                        error = null,
+                        playing = false,
+                        buffering = false,
+                        ended = "接收端无法播放该视频",
+                    )
+                    main.postDelayed({ stopInternal() }, ERROR_EXIT_DELAY_MS)
+                }
+            }
+        }
+        vlcWatchdog = r
+        main.postDelayed(r, delayMs)
+    }
+
+    private fun cancelVlcWatchdog() {
+        vlcWatchdog?.let { main.removeCallbacks(it) }
+        vlcWatchdog = null
+    }
+
+    private fun onVlcEvent(event: VlcMediaPlayer.Event) {
+        val mp = vlcPlayer ?: return
+        when (event.type) {
+            VlcMediaPlayer.Event.Playing -> {
+                _state.value = _state.value.copy(playing = true, buffering = false)
+                syncVlcVideoSize(mp)
+                onLog("libVLC 已开始播放")
+            }
+
+            VlcMediaPlayer.Event.Paused ->
+                _state.value = _state.value.copy(playing = false)
+
+            VlcMediaPlayer.Event.Buffering ->
+                _state.value = _state.value.copy(buffering = event.buffering < 100f)
+
+            VlcMediaPlayer.Event.LengthChanged ->
+                _state.value = _state.value.copy(durationMs = mp.length.coerceAtLeast(0))
+
+            VlcMediaPlayer.Event.Vout -> {
+                vlcFirstVout = true
+                cancelVlcWatchdog()
+                syncVlcVideoSize(mp)
+                onLog(
+                    "libVLC 出画: 轨道=${mp.currentVideoTrack?.width}x${mp.currentVideoTrack?.height}" +
+                        " vout=${runCatching { mp.vlcVout.areViewsAttached() }.getOrDefault(false)}" +
+                        " size=${runCatching { mp.currentVideoTrack?.width }.getOrNull()}"
+                )
+            }
+
+            VlcMediaPlayer.Event.EndReached -> {
+                onLog("libVLC 播放结束")
+                cancelVlcWatchdog()
+                stopInternal()
+            }
+
+            VlcMediaPlayer.Event.EncounteredError -> {
+                onLog("libVLC 播放失败")
+                cancelVlcWatchdog()
+                fail("接收端无法播放该视频")
+            }
+        }
+    }
+
+    private fun syncVlcVideoSize(mp: VlcMediaPlayer) {
+        val track = runCatching { mp.currentVideoTrack }.getOrNull() ?: return
+        if (track.width > 0 && track.height > 0) {
+            _state.value = _state.value.copy(width = track.width, height = track.height)
+        }
+    }
+
+    /**
+     * libVLC 的 vout 必须知道目标窗口尺寸，而且这个尺寸得**等于渲染面的真实像素尺寸**。
+     * 给大了（比如直接给屏幕 1440x3200 而 SurfaceView 只有 1440x810）不会报错：
+     * libVLC 照样解码、照样出画，只是把画面按 1440x3200 画布居中排版，
+     * 而 SurfaceView 只显示顶部 810 行 —— 结果就是「进度在走、日志说收到画面、屏幕全黑」。
+     */
+    private fun applyVlcWindowSize(vout: IVLCVout) {
+        val dm = context.resources.displayMetrics
+        var w = dm.widthPixels
+        var h = dm.heightPixels
+        val holder = surfaceHolder
+        if (holder != null) {
+            val f = runCatching { holder.surfaceFrame }.getOrNull()
+            if (f != null && f.width() > 0 && f.height() > 0) {
+                w = f.width()
+                h = f.height()
+            }
+        }
+        vout.setWindowSize(w, h)
+        onLog("libVLC 渲染窗口 ${w}x${h}")
+    }
+
+    private fun fail(message: String) {
+        cancelWatchdog()
+        stopTicker()
+        _state.value = _state.value.copy(
+            error = null,
+            playing = false,
+            buffering = false,
+            ended = message,
+        )
+        main.postDelayed({ stopInternal() }, ERROR_EXIT_DELAY_MS)
     }
 
     fun play(url: String, title: String) {
@@ -129,6 +380,9 @@ class LanVideoPlayer(
             pendingSeekMs = -1L
             firstFrameRendered = false
             fallbackStage = 0
+            vlcTried = false
+            currentUrl = url
+            currentTitle = title
             _state.value = LanVideoState(url = url, title = title, buffering = true)
             onLog("局域网视频开始加载: $url")
 
@@ -228,6 +482,17 @@ class LanVideoPlayer(
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
+                        // 容器/编码这一层 ExoPlayer + NextLib 都搞不定时（典型：ASF/WMV/WMA），
+                        // 交给 libVLC 再试一次 —— 它自带 FFmpeg 的解封装器。
+                        if (!vlcTried && isHandoffError(error)) {
+                            vlcTried = true
+                            val url = currentUrl
+                            if (url != null) {
+                                onLog("ExoPlayer 处理不了（${error.errorCodeName}），改用 libVLC 兜底")
+                                switchToVlc(url, currentTitle, _state.value.positionMs)
+                                return
+                            }
+                        }
                         // 原始错误只进日志；给用户的提示按错误类别翻译成人话。
                         // 分类依据是实测：换到 ExoPlayer + NextLib 后，容器和编码这两类失败
                         // 是用户最可能撞上的（例：WMV/ASF 没有解封装器 -> PARSING_CONTAINER_UNSUPPORTED）。
@@ -286,6 +551,12 @@ class LanVideoPlayer(
 
     fun toggle() {
         main.post {
+            val vlc = vlcPlayer
+            if (vlc != null) {
+                if (vlc.isPlaying) vlc.pause() else vlc.play()
+                _state.value = _state.value.copy(playing = vlc.isPlaying)
+                return@post
+            }
             val p = player ?: return@post
             if (p.isPlaying) {
                 p.pause()
@@ -301,6 +572,13 @@ class LanVideoPlayer(
 
     fun play() {
         main.post {
+            val vlc = vlcPlayer
+            if (vlc != null) {
+                vlc.play()
+                _state.value = _state.value.copy(playing = true)
+                startTicker()
+                return@post
+            }
             val p = player ?: return@post
             p.play()
             _state.value = _state.value.copy(playing = true)
@@ -310,6 +588,12 @@ class LanVideoPlayer(
 
     fun pause() {
         main.post {
+            val vlc = vlcPlayer
+            if (vlc != null) {
+                if (vlc.isPlaying) vlc.pause()
+                _state.value = _state.value.copy(playing = false)
+                return@post
+            }
             val p = player ?: return@post
             if (p.isPlaying) {
                 p.pause()
@@ -321,9 +605,17 @@ class LanVideoPlayer(
 
     fun seekTo(positionMs: Long) {
         main.post {
-            val p = player
             val duration = _state.value.durationMs
             val target = if (duration > 0) positionMs.coerceIn(0, duration) else positionMs.coerceAtLeast(0)
+
+            val vlc = vlcPlayer
+            if (vlc != null) {
+                runCatching { vlc.time = target }
+                _state.value = _state.value.copy(positionMs = target)
+                return@post
+            }
+
+            val p = player
             // 还没就绪（正在 prepare）：先记住，就绪后再跳
             if (p == null || p.playbackState != Player.STATE_READY) {
                 pendingSeekMs = target
@@ -344,7 +636,7 @@ class LanVideoPlayer(
     }
 
     fun release() {
-        main.post { releaseInternal() }
+        main.post { releaseAll() }
     }
 
     private fun stopInternal() {
@@ -356,17 +648,38 @@ class LanVideoPlayer(
     private fun releaseInternal() {
         stopTicker()
         cancelWatchdog()
+        cancelVlcWatchdog()
         pendingSeekMs = -1L
         firstFrameRendered = false
         fallbackStage = 0
         droppedFramesTotal = 0
         droppedFramesLogged = 0
+        vlcTried = false
+        vlcFirstVout = false
+        vlcVoutRetry = 0
         runCatching { player?.setVideoSurface(null) }
         // 必须在 release 之前 detach
         runCatching { decoderManager?.detach() }
         decoderManager = null
         runCatching { player?.release() }
         player = null
+
+        // libVLC 兜底内核：detach -> stop -> release；LibVLC 实例本身留着重用（创建很贵）
+        vlcPlayer?.let { mp ->
+            runCatching { mp.vlcVout.detachViews() }
+            runCatching { mp.setEventListener(null) }
+            runCatching { mp.stop() }
+            runCatching { mp.detachViews() }
+            runCatching { mp.release() }
+        }
+        vlcPlayer = null
+    }
+
+    /** 彻底释放（含 LibVLC 实例）。 */
+    private fun releaseAll() {
+        releaseInternal()
+        runCatching { libVlc?.release() }
+        libVlc = null
     }
 
     /**
@@ -415,6 +728,24 @@ class LanVideoPlayer(
         watchdog = null
     }
 
+    /**
+     * 哪些错误值得交给 libVLC 再试一次。
+     *
+     * 只交"引擎能力不够"这一类：容器不认识、编码解不了、解码器起不来。
+     * 网络/文件类错误交给 libVLC 也没用（同样取不到），就别白白切一次。
+     */
+    private fun isHandoffError(error: PlaybackException): Boolean = when (error.errorCode) {
+        PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+        PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED,
+        PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+        PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
+        PlaybackException.ERROR_CODE_DECODING_FAILED,
+        PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+        -> true
+
+        else -> false
+    }
+
     /** 当前实际生效的解码类别；未知/还没初始化时返回 null。 */
     private fun activeVideoMode(): DecoderMode? =
         runCatching { decoderManager?.activeVideoMode }.getOrNull()
@@ -432,6 +763,19 @@ class LanVideoPlayer(
         var ticks = 0L
         val r = object : Runnable {
             override fun run() {
+                val vlc = vlcPlayer
+                if (vlc != null) {
+                    // libVLC 自己报时间和时长，直接拿来用
+                    runCatching {
+                        val len = vlc.length
+                        _state.value = _state.value.copy(
+                            positionMs = vlc.time.coerceAtLeast(0),
+                            durationMs = if (len > 0) len else _state.value.durationMs,
+                            playing = vlc.isPlaying,
+                        )
+                        syncVlcVideoSize(vlc)
+                    }
+                }
                 val p = player
                 if (p != null) {
                     runCatching {
@@ -481,5 +825,26 @@ class LanVideoPlayer(
 
         /** 切到 FFmpeg 之后再等多久还没画面就放弃（软解起播比硬解慢）。 */
         const val NO_FRAME_GIVEUP_MS = 8000L
+
+        /** libVLC 起播后多久还没出画就重挂一次渲染面。 */
+        const val VLC_NO_VOUT_RETRY_MS = 6000L
+
+        /** 重挂渲染面之后再等多久还没画面就判定接收端放不出来。 */
+        const val VLC_NO_VOUT_GIVEUP_MS = 6000L
+
+        /**
+         * libVLC 兜底内核的启动参数。
+         * 只加必要的两条：网络/文件缓存给足以免卡顿；视频轨还没出时不丢帧。
+         * 其余保持默认 —— 参数越多越容易踩到平台差异。
+         */
+        val VLC_ARGS = arrayListOf(
+            // 诊断用：把 libVLC 内部日志（vout/解码器选择）吐到 logcat 的 VLC-std 里。
+            // 排查完可以降到 "--verbose=1" 甚至删掉。
+            "--verbose=2",
+            "--no-drop-late-frames",
+            "--no-skip-frames",
+            "--network-caching=1500",
+            "--file-caching=1500",
+        )
     }
 }

@@ -14,6 +14,10 @@ media3 = "1.11.0"
 # CastKit: NextLib 给 Media3 补上 FFmpeg 软解（官方 media3-decoder-ffmpeg 只做音频）。
 # 版本号规则是 `<它对应的 media3 版本>-<nextlib 自己的版本>`，所以必须和上面的 media3 对齐。
 nextlib = "1.11.0-0.15.0"
+# libVLC：自带 FFmpeg 的**解封装器**（含 ASF）+ 全套解码器 + 渲染器。
+# Media3 没有 ASF 解封装器，NextLib 虽然源码里 --enable-avformat 但发布包里不带 libavformat.so，
+# 所以 WMV/WMA 这类容器只能靠它兜底。实测 arm64-v8a 的 .so 满足 16KB 页对齐（Android 15+ 硬要求）。
+vlc = "3.7.6"
 oboe = "1.9.3"
 
 [libraries]
@@ -43,6 +47,8 @@ media3-transformer = { group = "androidx.media3", name = "media3-transformer", v
 media3-ui-compose-material3 = { group = "androidx.media3", name = "media3-ui-compose-material3", version.ref = "media3" }
 # FFmpeg 软解（视频：H.264/HEVC/VP8/VP9/AV1；音频：AC3/EAC3/DTS/TrueHD/FLAC/…）
 nextlib-media3ext = { group = "io.github.anilbeesetti", name = "nextlib-media3ext", version.ref = "nextlib" }
+# libVLC 兜底播放内核（LGPL-2.1）：ExoPlayer + NextLib 都处理不了的容器交给它
+libvlc = { group = "org.videolan.android", name = "libvlc-all", version.ref = "vlc" }
 
 kotlinx-coroutines = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 

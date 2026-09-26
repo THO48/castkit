@@ -246,15 +246,20 @@ fun VideoPlayerScreen(
                 factory = { ctx ->
                     SurfaceView(ctx).also { sv ->
                         sv.holder.addCallback(object : SurfaceHolder.Callback {
-                            override fun surfaceCreated(holder: SurfaceHolder) =
+                            override fun surfaceCreated(holder: SurfaceHolder) {
+                                vm.setSurfaceHolder(holder)
                                 vm.setSurface(holder.surface)
+                            }
 
                             override fun surfaceChanged(
                                 holder: SurfaceHolder,
                                 format: Int,
                                 width: Int,
                                 height: Int,
-                            ) = vm.setSurface(holder.surface)
+                            ) {
+                                vm.setSurfaceHolder(holder)
+                                vm.setSurface(holder.surface)
+                            }
 
                             override fun surfaceDestroyed(holder: SurfaceHolder) =
                                 vm.setSurface(null)
