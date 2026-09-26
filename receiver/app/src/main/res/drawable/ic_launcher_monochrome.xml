@@ -1,15 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  接收端启动图标单色层（Android 13+ 主题图标 / Themed Icon）。
+
+  来源：Material Symbols (Google) 的 `cast`，许可 Apache-2.0。
+  系统只取这一层的 **alpha 通道**并用自己的主题色着色，所以填什么颜色无所谓，
+  关键是形状要实心 —— 因此用实心版而不是描边版：描边在主题图标下会变成一圈细线。
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="960"
-    android:viewportHeight="960">
+    android:viewportWidth="108"
+    android:viewportHeight="108">
     <group
-        android:pivotX="480"
-        android:pivotY="480"
-        android:scaleX="0.5"
-        android:scaleY="0.5">
+        android:scaleX="2.5"
+        android:scaleY="2.5"
+        android:translateX="24"
+        android:translateY="24">
         <path
             android:fillColor="#000000"
-            android:pathData="m240,840 l240,-240 l240,240L240,840ZM80,680v-480q0,-33 23.5,-56.5T160,120h640q33,0 56.5,23.5T880,200v480q0,33 -23.5,56.5T800,760H680v-80h120v-480H160v480h120v80H160q-33,0 -56.5,-23.5T80,680Zm400,-200Z" />
+            android:pathData="M2 20v-3q1.25 0 2.125.875T5 20zm5 0q0-2.075-1.463-3.537T2 15v-2q2.925 0 4.963 2.038T9 20zm4 0q0-1.875-.712-3.512t-1.926-2.85t-2.85-1.925T2 11V9q2.275 0 4.275.863t3.5 2.362t2.363 3.5T13 20zm4 0q0-2.7-1.025-5.062t-2.787-4.126t-4.126-2.787T2 7V6q0-.825.588-1.412T4 4h16q.825 0 1.413.588T22 6v12q0 .825-.587 1.413T20 20z" />
     </group>
 </vector>

@@ -1,32 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  接收端启动图标前景层：**实心版 cast**。
+
+  来源：Material Symbols (Google) 的 `cast`
+        https://github.com/google/material-design-icons
+  许可：Apache-2.0，署名见 docs/THIRD_PARTY.md
+
+  与发送端配套：发送端用 Material Design Icons 的 `cast`（**描边版**）。
+  形状相同、字重不同，桌面上一眼可分。
+
+  这里替换掉了 fork 带过来的旧前景：它是 960×960 视口下的三层灰色阴影
+  （#C0C0C0 / #9E9E9E / #424242）叠一个 AirPlay 形状，配白色底 —— 与其说是图标，
+  不如说是占位图。现在统一到与发送端相同的深蓝底 + 白色图形。
+
+  画布 108×108，安全区中间 66dp；24×24 原图缩放 2.5 倍并平移 24，占中间 60×60。
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="960"
-    android:viewportHeight="960">
+    android:viewportWidth="108"
+    android:viewportHeight="108">
     <group
-        android:pivotX="480"
-        android:pivotY="480"
-        android:scaleX="0.5"
-        android:scaleY="0.5">
-        <!-- shadow layer -->
-        <group
-            android:translateX="16"
-            android:translateY="16">
-            <path
-                android:fillColor="#C0C0C0"
-                android:pathData="m240,840 l240,-240 l240,240L240,840ZM80,680v-480q0,-33 23.5,-56.5T160,120h640q33,0 56.5,23.5T880,200v480q0,33 -23.5,56.5T800,760H680v-80h120v-480H160v480h120v80H160q-33,0 -56.5,-23.5T80,680Zm400,-200Z" />
-        </group>
-        <!-- middle layer -->
-        <group
-            android:translateX="12"
-            android:translateY="12">
-            <path
-                android:fillColor="#9E9E9E"
-                android:pathData="m240,840 l240,-240 l240,240L240,840ZM80,680v-480q0,-33 23.5,-56.5T160,120h640q33,0 56.5,23.5T880,200v480q0,33 -23.5,56.5T800,760H680v-80h120v-480H160v480h120v80H160q-33,0 -56.5,-23.5T80,680Zm400,-200Z" />
-        </group>
-        <!-- main layer -->
+        android:scaleX="2.5"
+        android:scaleY="2.5"
+        android:translateX="24"
+        android:translateY="24">
         <path
-            android:fillColor="#424242"
-            android:pathData="m240,840 l240,-240 l240,240L240,840ZM80,680v-480q0,-33 23.5,-56.5T160,120h640q33,0 56.5,23.5T880,200v480q0,33 -23.5,56.5T800,760H680v-80h120v-480H160v480h120v80H160q-33,0 -56.5,-23.5T80,680Zm400,-200Z" />
+            android:fillColor="#FFFFFF"
+            android:pathData="M2 20v-3q1.25 0 2.125.875T5 20zm5 0q0-2.075-1.463-3.537T2 15v-2q2.925 0 4.963 2.038T9 20zm4 0q0-1.875-.712-3.512t-1.926-2.85t-2.85-1.925T2 11V9q2.275 0 4.275.863t3.5 2.362t2.363 3.5T13 20zm4 0q0-2.7-1.025-5.062t-2.787-4.126t-4.126-2.787T2 7V6q0-.825.588-1.412T4 4h16q.825 0 1.413.588T22 6v12q0 .825-.587 1.413T20 20z" />
     </group>
 </vector>

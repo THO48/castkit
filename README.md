@@ -188,7 +188,13 @@ bash tools/install-apk.sh receiver # 导出到 Download/DSHA 供安装
 
 ## 贡献者
 
-- **THO48** —— 发起与维护
+<p>
+<a href="https://github.com/THO48"><img src="https://avatars.githubusercontent.com/u/41006094?v=4" width="72" alt="THO48"></a>
+&nbsp;&nbsp;
+<a href="https://github.com/deepseek-ai"><img src="https://avatars.githubusercontent.com/u/148330874?v=4" width="72" alt="DeepSeek"></a>
+</p>
+
+- **[THO48](https://github.com/THO48)** —— 发起与维护
 - **[DeepSeek](https://github.com/deepseek-ai)** —— 发送端 v1.0.0 UI 重构的模型与推理
 - **DSH（DeepSeek Harness）** —— 上述工作的编码代理运行环境
 

@@ -29,6 +29,24 @@
 
 发送端**未**引入 GPL 代码；LANCast 协议与实现均为本项目自研（`docs/LANCast-v1.md`）。
 
+## 启动图标（两个 App 共用一套）
+
+两个 App 的图标取自 Apache-2.0 的开源图标集，**形状相同、字重不同** —— 发送端用描边版、
+接收端用实心版：桌面上一眼能分开，又明显是同一套产品。
+
+| App | 图形 | 来源 | 许可 |
+|---|---|---|---|
+| 发送端 | `cast`（**描边**版） | [Material Design Icons](https://github.com/Templarian/MaterialDesign)（Pictogrammers） | **Apache-2.0**（其 LICENSE 中注明 `# Icons: Apache 2.0`） |
+| 接收端 | `cast`（**实心**版） | [Material Symbols](https://github.com/google/material-design-icons)（Google） | **Apache-2.0** |
+
+为什么不选 `cast` + `connected_tv` 那种"更贴语义"的组合：两者都是"矩形 + 波纹"，
+缩到桌面图标尺寸（约 48dp）后分不出来。描边 / 实心的差异在小尺寸下才立得住。
+
+转换方式：两个 SVG 都是 24×24 视口，转成 Android VectorDrawable 时用 `group`
+缩放 2.5 倍并平移 24，映射到 108×108 自适应图标画布的中间 60×60（安全区 66dp）。
+接收端的单色层（Android 13+ 主题图标）用的是**实心版** —— 系统只取 alpha 通道着色，
+描边在主题图标下会变成一圈细线。
+
 ## 与上游的差异（接收端）
 
 1. `applicationId` 改为 `com.dsh.castkit.receiver`，应用名/图标中文化（可与 F-Droid 版本共存）。
@@ -38,3 +56,9 @@
 5. `third_party/openssl-cmake`：改用本地 OpenSSL 源码（原 URL 不可达）。
 6. 新增 `net/` 下的 LANCast 接收实现与相关设置项（见 `docs/LANCast-v1.md`）。
 7. 新增 `values-zh-rCN` 中文资源与显示模式/局域网接收设置。
+8. 启动图标从上游的"白底 + 灰色三层阴影 AirPlay 图形"改为开源图标集的实心 `cast`
+   （深蓝底 `#14304A` + 白色图形），并与发送端的描边版配成一套，见上文「启动图标」一节。
+9. **补上 `mipmap-mdpi … mipmap-xxxhdpi` 的传统位图**（5 档 × 方形/圆形）。
+   上游 `minSdk = 24` 却只提供 `mipmap-anydpi-v26`，而 `anydpi-v26` 只在 API 26+ 生效 ——
+   在 Android 7.0/7.1 上 `@mipmap/ic_launcher` 解析不到，桌面图标会是空白。
+   这是上游就存在的问题，本次顺带修掉。
