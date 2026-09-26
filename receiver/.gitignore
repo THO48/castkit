@@ -1,0 +1,18 @@
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+/build/
+/app/build/
+/captures
+.externalNativeBuild/
+.cxx/
+
+*.jks
+# CastKit: 原生依赖源码由 tools/fetch-sources.sh 获取，不入库
+/app/src/main/cpp/third_party/UxPlay
+/app/src/main/cpp/third_party/openssl-cmake
+/app/src/main/cpp/third_party/openssl-src
+/app/src/main/cpp/third_party/libplist
+/app/src/main/cpp/third_party/ffmpeg
