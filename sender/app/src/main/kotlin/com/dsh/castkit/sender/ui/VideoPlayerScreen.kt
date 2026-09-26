@@ -80,6 +80,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.dsh.castkit.sender.PlayerOrientation
 import com.dsh.castkit.sender.Prefs
 import com.dsh.castkit.sender.R
@@ -184,6 +186,18 @@ fun VideoPlayerScreen(
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
+    /**
+     * 系统栏（顶部状态栏 + 底部手势条）的控制器。
+     *
+     * 可见性**跟着播放器控制栏走**：控制栏出现时系统栏一起显示，控制栏收起才一起隐藏
+     * （不是进播放页就一律隐藏 —— 那样用户看不到时间/电量/通知）。
+     * 提到这里而不是放在某个 effect 里，是因为"跟着 [overlayVisible] 显隐"和"退出时还原"
+     * 两处都要用同一个实例。
+     */
+    val insetsController = remember(activity) {
+        activity?.window?.let { WindowInsetsControllerCompat(it, it.decorView) }
+    }
+
     val state by vm.state.collectAsState()
     val castState by CastBus.state.collectAsState()
     val receivers by discovery.receivers.collectAsState()
@@ -228,12 +242,18 @@ fun VideoPlayerScreen(
     DisposableEffect(Unit) {
         // 告诉 CastService：本机旋转是"看片用"的，别带动镜像画面
         CastBus.update { it.copy(localPlayerActive = true) }
+        // 从屏幕边缘往里划可以临时唤出系统栏（看通知/电量），但不改变播放器控制栏的状态
+        insetsController?.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         onDispose {
             // 万一在长按状态里退出（比如被系统收回），变速要复位，不能把 3× 留给下一个片源
             vm.setSpeed(1f)
             // 亮度/音量都是系统级的，**不还原** —— 用户滑到哪就是哪（和系统音量条一个语义）
             vm.release()
             CastBus.update { it.copy(localPlayerActive = false) }
+            // 退出时必须显式把系统栏放回去：播放页是叠在 MainActivity 上的覆盖层而不是独立
+            // Activity，onDispose 时 Activity 还活着，不会靠窗口重建把它带回来。
+            insetsController?.show(WindowInsetsCompat.Type.systemBars())
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
@@ -283,6 +303,16 @@ fun VideoPlayerScreen(
         if (overlayVisible && scrubMs == null) {
             delay(CastKitMotion.OVERLAY_AUTO_HIDE_MS)
             overlayVisible = false
+        }
+    }
+
+    // 系统栏跟着控制栏显隐。控制栏是 AnimatedVisibility 淡入淡出的，系统栏的显隐由 WindowInsets
+    // 控制器自己带系统动画，两者时间尺度接近，不需要额外对齐。
+    LaunchedEffect(insetsController, overlayVisible) {
+        if (overlayVisible) {
+            insetsController?.show(WindowInsetsCompat.Type.systemBars())
+        } else {
+            insetsController?.hide(WindowInsetsCompat.Type.systemBars())
         }
     }
 

@@ -502,6 +502,28 @@
 `background` 必须在 `navigationBarsPadding` **之前**，否则 scrim 只铺到内容区，
 手势条（小白条）那一条没被盖住，屏幕最底下会漏出一条没压暗的底色。
 
+**系统栏跟随控制栏显隐**：系统栏（顶部状态栏 + 底部手势条）的可见性**绑定 `overlayVisible`**——
+播放器控制栏出现时系统栏一起显示，控制栏收起时才一起隐藏。
+
+| 时机 | 播放器控制栏 | 系统状态栏 / 手势条 |
+|---|---|---|
+| 进播放页（控制栏默认显示 3 秒） | 显示 | **显示**（用户要能看到时间/电量/通知） |
+| 3 秒无操作自动收起 | 隐藏 | **隐藏**（全屏看片） |
+| 点击画面唤出 | 显示 | **显示** |
+| 从屏幕边缘往里划 | 不变 | 临时浮出，几秒后自动再收起 |
+
+实现是 `LaunchedEffect(insetsController, overlayVisible)` 里 `show` / `hide(WindowInsetsCompat.Type.systemBars())`，
+`systemBarsBehavior = BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`（边缘划一下能临时看通知，不改变控制栏状态）。
+**退出播放页必须显式 `show`**：播放页是叠在 `MainActivity` 上的覆盖层而不是独立 Activity，
+`onDispose` 时 Activity 还活着，不会靠窗口重建把系统栏带回来（漏了这一步就是"回到文件列表再也看不到状态栏"）。
+
+系统栏隐藏时 `statusBarsPadding()` / `navigationBarsPadding()` 归零，顶栏与底栏自动贴到屏幕边缘；
+显示时又各自让出状态栏/手势条的高度。Material3 `TopAppBar` 自带的 `WindowInsets.systemBars` 也是这个来源，
+不需要额外改。因为顶栏/底栏本身就在同一个 `AnimatedVisibility` 里淡入淡出，这个 inset 变化不会造成可见的跳动。
+
+本机挖孔在竖屏是顶部居中；横屏会转到左侧边且垂直居中（实测 y 680–761px / 屏高 1440），
+与顶栏、底栏都不重叠，所以没有额外加 `displayCutout` 避让。
+
 **交互**：
 
 - 点击画面任意处切换控制栏显隐（`indication = null`，无涟漪）。
