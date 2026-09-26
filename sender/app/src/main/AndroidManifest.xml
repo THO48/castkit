@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 播放页右侧竖滑调的是系统媒体音量 -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- 内置视频库：读本机视频（Android 13+ 用 READ_MEDIA_VIDEO，13 以下用外部存储读权限） -->
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <!-- .nomedia 目录不在 MediaStore 里，扫它们需要「所有文件访问」（用户可在浏览器里开关） -->

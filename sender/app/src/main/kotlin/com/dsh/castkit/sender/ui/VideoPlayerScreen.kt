@@ -84,6 +84,11 @@ import com.dsh.castkit.sender.cast.CastMode
 import com.dsh.castkit.sender.cast.CastPhase
 import com.dsh.castkit.sender.net.LanCastDiscovery
 import com.dsh.castkit.sender.ui.components.CastKitTopBar
+import com.dsh.castkit.sender.ui.components.PlayerAdjustIndicator
+import com.dsh.castkit.sender.ui.components.PlayerAdjustLayer
+import com.dsh.castkit.sender.ui.components.PlayerAdjustTarget
+import com.dsh.castkit.sender.ui.components.PlayerBrightness
+import com.dsh.castkit.sender.ui.components.SystemVolume
 import com.dsh.castkit.sender.ui.theme.CastKitMotion
 import com.dsh.castkit.sender.ui.theme.CastKitSizes
 import com.dsh.castkit.sender.ui.theme.CastKitSpacing
@@ -173,6 +178,12 @@ fun VideoPlayerScreen(
     /** 长按快进是否正按着 —— 只用来决定要不要显示那个「3× 快进中」提示。 */
     var speedHeld by remember { mutableStateOf(false) }
 
+    // 竖滑调整：亮度只作用于本窗口，音量走系统。两个值都是 0..1 的浮点，
+    // 滑动时连续变化；音量那个实际落到系统上会被量化成整数档（见 SystemVolume 注释）。
+    var adjusting by remember { mutableStateOf<PlayerAdjustTarget?>(null) }
+    var brightness by remember { mutableStateOf(PlayerBrightness.current(context)) }
+    var volume by remember { mutableStateOf(SystemVolume.current(context)) }
+
     val casting = castState.mode == CastMode.VIDEO &&
         (castState.phase == CastPhase.RUNNING || castState.phase == CastPhase.CONNECTING)
     val remote = casting
@@ -180,11 +191,15 @@ fun VideoPlayerScreen(
     LaunchedEffect(uri) { vm.play(uri, title) }
 
     DisposableEffect(Unit) {
+        // 进页时记下系统亮度，退出时要按原值还原（有些 ROM 会把窗口亮度写进系统设置）
+        val savedBrightness = PlayerBrightness.current(context)
         // 告诉 CastService：本机旋转是"看片用"的，别带动镜像画面
         CastBus.update { it.copy(localPlayerActive = true) }
         onDispose {
             // 万一在长按状态里退出（比如被系统收回），变速要复位，不能把 3× 留给下一个片源
             vm.setSpeed(1f)
+            // 亮度只跟播放页绑定：退出就把系统亮度还原（音量不动，那本来就是系统音量）
+            PlayerBrightness.restore(activity, savedBrightness)
             vm.release()
             CastBus.update { it.copy(localPlayerActive = false) }
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -339,6 +354,45 @@ fun VideoPlayerScreen(
                     modifier = Modifier.padding(CastKitSpacing.space6),
                 )
             }
+        }
+
+        // 竖滑调整层：铺在画面之上、控制栏之下。
+        // 放在这里（而不是加在父 Box 的手势里）是为了不跟"单击/长按"那套打架，理由见 PlayerAdjustLayer。
+        PlayerAdjustLayer(
+            onStart = { target ->
+                adjusting = target
+                // 每次开始滑动都以当前实际值起步，避免上次滑到哪就永远从哪开始
+                when (target) {
+                    PlayerAdjustTarget.BRIGHTNESS -> brightness = PlayerBrightness.current(context)
+                    PlayerAdjustTarget.VOLUME -> volume = SystemVolume.current(context)
+                }
+            },
+            onDelta = { target, delta ->
+                when (target) {
+                    PlayerAdjustTarget.BRIGHTNESS -> {
+                        brightness = (brightness + delta).coerceIn(0f, 1f)
+                        PlayerBrightness.apply(activity, brightness)
+                    }
+
+                    PlayerAdjustTarget.VOLUME -> {
+                        volume = (volume + delta).coerceIn(0f, 1f)
+                        SystemVolume.apply(context, volume)
+                    }
+                }
+            },
+            onEnd = { adjusting = null },
+        )
+
+        // 竖滑时的中央提示（与「3× 快进中」同一个位置，两者不会同时出现）
+        adjusting?.let { target ->
+            PlayerAdjustIndicator(
+                target = target,
+                value = when (target) {
+                    PlayerAdjustTarget.BRIGHTNESS -> brightness
+                    PlayerAdjustTarget.VOLUME -> volume
+                },
+                modifier = Modifier.align(Alignment.Center),
+            )
         }
 
         // 长按快进的提示：只在按住期间出现，压在画面正中

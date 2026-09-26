@@ -488,6 +488,18 @@
   用 `detectTapGestures` 的 `onLongPress`（开始）+ `onPress` 里的 `tryAwaitRelease()`（松手）配对实现——
   这个 API 只有 `onPress` 拿得到 `awaitRelease`，`onLongPress` 是普通 lambda，所以必须拆两半。
   **只在投送时生效**：开始投屏后本机只是遥控器，长按不会有任何反应（也不显示提示）。
+- **左半屏上下滑 = 亮度、右半屏上下滑 = 系统音量**，无级连续，画面中央显示图标 + 进度条 + 百分比。
+  实现方式是**单独铺一层子节点**（`PlayerAdjustLayer`）而不是加进上面那个手势里：子节点先拿到事件，
+  但只在超过 touch slop 之后才 consume，所以快速点击仍归父层、竖向拖动不会被误判成单击。
+  控制栏是同一个 Box 里更靠后的兄弟节点，命中优先，所以在进度条上横向拖动不会被这层抢走。
+- **亮度的作用域**：用 `Window.screenBrightness`（窗口级）。注意**实测小米 ROM 会把这个窗口值
+  直接写进系统设置**，窗口复位后系统设置不会自己回去 —— 所以退出播放时要先把进页时记下的原值
+  回写一次、**隔 250ms** 再交还控制权（两次 `setAttributes` 挨着调用会被 WindowManager 合并，
+  中间那个值轮不到生效）。不直接用 `Settings.System.putInt` 是因为那需要 `WRITE_SETTINGS` 特殊权限。
+- **音量的作用域**：走 `AudioManager.setStreamVolume(STREAM_MUSIC)`，是系统音量、退出播放保持。
+  「无级」有平台上限：该接口只吃整数档，本机实测媒体音量 151 档（`cmd media_session volume
+  --stream 3 --get` → `[0..150]`），手感连续；只有 15 档的机器会一格一格跳。
+  指示条本身按浮点值绘制，不做取整，所以看起来始终是连续的。
 - 控制栏显示后 **3 秒**无操作自动隐藏（`AnimatedVisibility` 淡入淡出 200ms）。
 - 拖动进度条时**不**自动隐藏；松手后重新计时。
 - 「上一个 / 下一个」按**打开播放页时那个文件夹的显示顺序**（含当时的排序）走；

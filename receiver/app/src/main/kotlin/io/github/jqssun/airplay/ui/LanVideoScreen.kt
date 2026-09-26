@@ -1,5 +1,6 @@
 package io.github.jqssun.airplay.ui
 
+import android.app.Activity
 import android.view.Surface
 import android.view.SurfaceHolder
 import androidx.activity.compose.BackHandler
@@ -39,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,6 +67,14 @@ fun LanVideoScreen(
     var scrubMs by remember { mutableStateOf<Long?>(null) }
     val position = scrubMs ?: state.positionMs
 
+    // 竖滑调整：亮度只作用于本窗口，音量走系统。两个值都是 0..1 的浮点，
+    // 滑动时连续变化；音量那个实际落到系统上会被量化成整数档（见 SystemVolume 注释）。
+    val context = LocalContext.current
+    val activity = context as? Activity
+    var adjusting by remember { mutableStateOf<PlayerAdjustTarget?>(null) }
+    var brightness by remember { mutableStateOf(PlayerBrightness.current(context)) }
+    var volume by remember { mutableStateOf(SystemVolume.current(context)) }
+
     // 播放中自动收起控件；正在拖动进度条时不收
     LaunchedEffect(state.playing, overlayVisible, scrubMs) {
         if (state.playing && overlayVisible && scrubMs == null) {
@@ -78,6 +88,13 @@ fun LanVideoScreen(
     DisposableEffect(state.playing) {
         view.keepScreenOn = state.playing
         onDispose { view.keepScreenOn = false }
+    }
+
+    // 亮度只跟本页绑定：退出时按原值还原（有些 ROM 会把窗口亮度写进系统设置；
+    // 音量不动，那本来就是系统音量）
+    DisposableEffect(Unit) {
+        val savedBrightness = PlayerBrightness.current(context)
+        onDispose { PlayerBrightness.restore(activity, savedBrightness) }
     }
 
     BackHandler { onStop() }
@@ -122,6 +139,45 @@ fun LanVideoScreen(
                     .clip(RoundedCornerShape(8.dp))
                     .background(Color(0x99000000))
                     .padding(horizontal = 20.dp, vertical = 12.dp),
+            )
+        }
+
+        // 竖滑调整层：铺在画面之上、控制栏之下。
+        // 放在这里（而不是加在父 Box 的手势里）是为了不跟"单击切控制栏"打架，理由见 PlayerAdjustLayer。
+        PlayerAdjustLayer(
+            onStart = { target ->
+                adjusting = target
+                // 每次开始滑动都以当前实际值起步，避免上次滑到哪就永远从哪开始
+                when (target) {
+                    PlayerAdjustTarget.BRIGHTNESS -> brightness = PlayerBrightness.current(context)
+                    PlayerAdjustTarget.VOLUME -> volume = SystemVolume.current(context)
+                }
+            },
+            onDelta = { target, delta ->
+                when (target) {
+                    PlayerAdjustTarget.BRIGHTNESS -> {
+                        brightness = (brightness + delta).coerceIn(0f, 1f)
+                        PlayerBrightness.apply(activity, brightness)
+                    }
+
+                    PlayerAdjustTarget.VOLUME -> {
+                        volume = (volume + delta).coerceIn(0f, 1f)
+                        SystemVolume.apply(context, volume)
+                    }
+                }
+            },
+            onEnd = { adjusting = null },
+        )
+
+        // 竖滑时的中央提示
+        adjusting?.let { target ->
+            PlayerAdjustIndicator(
+                target = target,
+                value = when (target) {
+                    PlayerAdjustTarget.BRIGHTNESS -> brightness
+                    PlayerAdjustTarget.VOLUME -> volume
+                },
+                modifier = Modifier.align(Alignment.Center),
             )
         }
 
