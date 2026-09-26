@@ -23,11 +23,16 @@ import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.dsh.castkit.sender.ui.theme.CastKitSpacing
 import com.dsh.castkit.sender.ui.theme.ImmersiveColors
 import com.dsh.castkit.sender.ui.theme.PillShape
@@ -167,48 +172,108 @@ fun PlayerAdjustIndicator(
 object PlayerBrightness {
 
     /** 起始值取系统亮度，这样第一下滑动是从"现在看着的样子"开始，不会先跳一下。 */
-    fun current(context: Context): Float {
-        val raw = runCatching {
-            Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS)
-        }.getOrDefault(128)
-        return (raw / 255f).coerceIn(0.02f, 1f)
-    }
+    fun current(context: Context): Float = currentRaw(context) / 255f
+
+    /**
+     * 当前系统亮度的**原始档位**（0..255）。
+     *
+     * 进页时记这个整数、而不是记浮点比例：浮点往返本身就会把最低档抬高
+     * （1/255 再乘回 255 还好，但这个 ROM 的曲线会把低端再抬 2~4 档），记整数最保险。
+     */
+    fun currentRaw(context: Context): Int = runCatching {
+        Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS)
+    }.getOrDefault(128).coerceIn(0, 255)
 
     fun apply(activity: Activity?, value: Float) {
         val window = activity?.window ?: return
         runCatching {
             val lp = window.attributes
-            lp.screenBrightness = value.coerceIn(0.01f, 1f)
+            lp.screenBrightness = value.coerceIn(0f, 1f)
             window.attributes = lp
         }
     }
 
     /**
-     * 退出播放时恢复系统亮度。
+     * 退出播放 / 切到后台时把系统亮度调回 [savedRaw]。
      *
-     * 先把窗口亮度**设回进页时记下的系统值**，再交还控制权（`BRIGHTNESS_OVERRIDE_NONE`）：
+     * 先把窗口亮度**设回进页时记下的原始档位**，再交还控制权（`BRIGHTNESS_OVERRIDE_NONE`）：
      * - 对会把窗口值写进系统的 ROM，第一步就是把系统设置改回去，第二步只是停止覆盖；
      * - 对行为正确的 ROM，第一步只影响本窗口（反正马上要复位），系统设置从头到尾没被动过。
      *
      * 不直接用 `Settings.System.putInt` 是因为那需要 `WRITE_SETTINGS` 特殊权限（要用户去设置页授权），
      * 而上面这条路不需要任何权限。
+     *
+     * 但这条路的**档位是有偏差的**：ROM 会把窗口那个浮点值按自己的曲线折成整数档，
+     * 实测低端会偏高 2~4 档（记下 1，回写成 3~5）。所以写完之后**读回来对一次**，
+     * 偏差超过 1 档就按比例再写一次 —— 一次就够，而且读回值没过期时才会动手，不会帮倒忙。
      */
-    fun restore(activity: Activity?, savedSystemValue: Float) {
+    fun restore(activity: Activity?, context: Context, savedRaw: Int) {
         val window = activity?.window ?: return
-        apply(activity, savedSystemValue)
-        // 两次 setAttributes 紧挨着调用会被 WindowManager 合并成一次，中间那个值根本轮不到生效
-        // （实测：直接连写，系统亮度停在改动后的值没回去）。所以隔一拍再交还控制权。
+        val target = savedRaw.coerceIn(0, 255)
+        /** 还原前的值（用户滑出来的那个），用来判断后面那次写有没有落地。 */
+        val before = currentRaw(context)
+        apply(activity, target / 255f)
+
         window.decorView.postDelayed({
-            runCatching {
-                val lp = window.attributes
-                lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-                window.attributes = lp
+            val now = currentRaw(context)
+            // 只有「确实写进去了、而且偏差超过 1 档」才校正：
+            // 读回值还等于还原前的值，说明这次写还没落地，此时按比例算出来的系数会离谱（实测会写歪）
+            if (now != before && kotlin.math.abs(now - target) > 1) {
+                apply(activity, (target / 255f) * (target.toFloat() / now))
             }
+            // 两次 setAttributes 紧挨着调用会被 WindowManager 合并成一次，中间那个值轮不到生效
+            // （实测：直接连写，系统亮度停在改动后的值没回去）。所以隔一拍再交还控制权。
+            window.decorView.postDelayed({
+                runCatching {
+                    val lp = window.attributes
+                    lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    window.attributes = lp
+                }
+            }, RESTORE_SETTLE_MS)
         }, RESTORE_SETTLE_MS)
     }
 
-    /** 回写原值之后隔多久交还控制权。 */
+    /** 回写原值之后隔多久读回校正 / 交还控制权。 */
     private const val RESTORE_SETTLE_MS = 250L
+}
+
+/**
+ * 把「播放页亮度」的生命周期管起来。
+ *
+ * 光在退出播放时还原是不够的：**按 Home / 切到别的 App 时播放页不会 dispose**，
+ * 亮度就留在原处了（实测按 Home 后系统亮度停在改动值上，没回去）。所以这里监听生命周期：
+ * 离开前台先把系统亮度还原，回到前台再把播放页自己的亮度贴回去。
+ *
+ * `brightness` 用 [rememberUpdatedState] 兜一层，否则 `DisposableEffect(owner)` 不会因为
+ * 亮度变化而重建，observer 里拿到的会是最初那个值。
+ */
+@Composable
+fun PlayerBrightnessEffect(
+    activity: Activity?,
+    context: Context,
+    brightness: Float,
+    savedRaw: Int,
+    /** 用户是否真的调过亮度。**没调过就一个字节都不写** —— 否则进页/切后台时会白碰一下系统亮度。 */
+    adjusted: Boolean,
+) {
+    val currentBrightness = rememberUpdatedState(brightness)
+    val currentAdjusted = rememberUpdatedState(adjusted)
+    val owner = LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE ->
+                    if (currentAdjusted.value) PlayerBrightness.restore(activity, context, savedRaw)
+
+                Lifecycle.Event.ON_RESUME ->
+                    if (currentAdjusted.value) PlayerBrightness.apply(activity, currentBrightness.value)
+
+                else -> Unit
+            }
+        }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer) }
+    }
 }
 
 /**

@@ -88,6 +88,7 @@ import com.dsh.castkit.sender.ui.components.PlayerAdjustIndicator
 import com.dsh.castkit.sender.ui.components.PlayerAdjustLayer
 import com.dsh.castkit.sender.ui.components.PlayerAdjustTarget
 import com.dsh.castkit.sender.ui.components.PlayerBrightness
+import com.dsh.castkit.sender.ui.components.PlayerBrightnessEffect
 import com.dsh.castkit.sender.ui.components.SystemVolume
 import com.dsh.castkit.sender.ui.theme.CastKitMotion
 import com.dsh.castkit.sender.ui.theme.CastKitSizes
@@ -184,6 +185,15 @@ fun VideoPlayerScreen(
     var brightness by remember { mutableStateOf(PlayerBrightness.current(context)) }
     var volume by remember { mutableStateOf(SystemVolume.current(context)) }
 
+    /** 进播放页时记下的系统亮度**原始档位**：退出播放、以及切到后台时都要还原成它。 */
+    val savedBrightnessRaw = remember { PlayerBrightness.currentRaw(context) }
+
+    /** 用户是否真的调过亮度：没调过就完全不碰系统亮度（否则进页/切后台会白改一下）。 */
+    var brightnessAdjusted by remember { mutableStateOf(false) }
+
+    // 按 Home / 切到别的 App 时播放页不会 dispose，所以亮度还得靠生命周期管（见 PlayerBrightnessEffect）
+    PlayerBrightnessEffect(activity, context, brightness, savedBrightnessRaw, brightnessAdjusted)
+
     val casting = castState.mode == CastMode.VIDEO &&
         (castState.phase == CastPhase.RUNNING || castState.phase == CastPhase.CONNECTING)
     val remote = casting
@@ -191,15 +201,13 @@ fun VideoPlayerScreen(
     LaunchedEffect(uri) { vm.play(uri, title) }
 
     DisposableEffect(Unit) {
-        // 进页时记下系统亮度，退出时要按原值还原（有些 ROM 会把窗口亮度写进系统设置）
-        val savedBrightness = PlayerBrightness.current(context)
         // 告诉 CastService：本机旋转是"看片用"的，别带动镜像画面
         CastBus.update { it.copy(localPlayerActive = true) }
         onDispose {
             // 万一在长按状态里退出（比如被系统收回），变速要复位，不能把 3× 留给下一个片源
             vm.setSpeed(1f)
             // 亮度只跟播放页绑定：退出就把系统亮度还原（音量不动，那本来就是系统音量）
-            PlayerBrightness.restore(activity, savedBrightness)
+            if (brightnessAdjusted) PlayerBrightness.restore(activity, context, savedBrightnessRaw)
             vm.release()
             CastBus.update { it.copy(localPlayerActive = false) }
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -370,6 +378,7 @@ fun VideoPlayerScreen(
             onDelta = { target, delta ->
                 when (target) {
                     PlayerAdjustTarget.BRIGHTNESS -> {
+                        brightnessAdjusted = true
                         brightness = (brightness + delta).coerceIn(0f, 1f)
                         PlayerBrightness.apply(activity, brightness)
                     }

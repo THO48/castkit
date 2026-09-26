@@ -75,6 +75,15 @@ fun LanVideoScreen(
     var brightness by remember { mutableStateOf(PlayerBrightness.current(context)) }
     var volume by remember { mutableStateOf(SystemVolume.current(context)) }
 
+    /** 进播放页时记下的系统亮度**原始档位**：退出播放、以及切到后台时都要还原成它。 */
+    val savedBrightnessRaw = remember { PlayerBrightness.currentRaw(context) }
+
+    /** 用户是否真的调过亮度：没调过就完全不碰系统亮度（否则进页/切后台会白改一下）。 */
+    var brightnessAdjusted by remember { mutableStateOf(false) }
+
+    // 按 Home / 切到别的 App 时播放页不会 dispose，所以亮度还得靠生命周期管（见 PlayerBrightnessEffect）
+    PlayerBrightnessEffect(activity, context, brightness, savedBrightnessRaw, brightnessAdjusted)
+
     // 播放中自动收起控件；正在拖动进度条时不收
     LaunchedEffect(state.playing, overlayVisible, scrubMs) {
         if (state.playing && overlayVisible && scrubMs == null) {
@@ -93,8 +102,7 @@ fun LanVideoScreen(
     // 亮度只跟本页绑定：退出时按原值还原（有些 ROM 会把窗口亮度写进系统设置；
     // 音量不动，那本来就是系统音量）
     DisposableEffect(Unit) {
-        val savedBrightness = PlayerBrightness.current(context)
-        onDispose { PlayerBrightness.restore(activity, savedBrightness) }
+        onDispose { if (brightnessAdjusted) PlayerBrightness.restore(activity, context, savedBrightnessRaw) }
     }
 
     BackHandler { onStop() }
@@ -156,6 +164,7 @@ fun LanVideoScreen(
             onDelta = { target, delta ->
                 when (target) {
                     PlayerAdjustTarget.BRIGHTNESS -> {
+                        brightnessAdjusted = true
                         brightness = (brightness + delta).coerceIn(0f, 1f)
                         PlayerBrightness.apply(activity, brightness)
                     }
