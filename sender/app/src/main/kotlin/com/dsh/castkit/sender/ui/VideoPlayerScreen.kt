@@ -67,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
@@ -775,8 +776,10 @@ internal fun PlayerBottomControls(
 /**
  * 悬浮操作钮：顶栏下方 / 底栏上方那种「单独一个」的操作。
  *
- * 与底栏里那排 [PlayerIconSlot] 同一套视觉语言（24dp 图标 + 可选小字），
- * 区别是没有整条 scrim 垫底，所以自带一个胶囊形 scrim 背景 —— 否则压在亮画面上看不清。
+ * 与底栏里那排 [PlayerIconSlot] 同一套视觉语言（24dp 图标 + 可选小字）。
+ * **没有底色**：顶栏、底栏都改成全透明之后，单独给这两个钮垫一块胶囊黑底反而最显眼，
+ * 所以图标和文字统一走「白色 + 黑色描边」（[OutlinedIcon] / [OutlinedText]），
+ * 压在亮画面上也认得出，同时不盖住画面。
  */
 @Composable
 internal fun PlayerFloatingAction(
@@ -787,30 +790,92 @@ internal fun PlayerFloatingAction(
     text: String? = null,
     active: Boolean = false,
 ) {
+    val tint = if (active) ImmersiveColors.Accent else ImmersiveColors.OnScrim
     Row(
         modifier = modifier
+            // 留着是为了让水波纹裁成胶囊形；没有底色不会再画出任何东西
             .clip(PillShape)
-            .background(ImmersiveColors.Scrim)
             .clickable(onClick = onClick)
             .height(CastKitSizes.minTouchTarget)
-            .padding(horizontal = CastKitSpacing.space3),
+            .padding(horizontal = CastKitSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(CastKitSpacing.space2),
+        horizontalArrangement = Arrangement.spacedBy(CastKitSpacing.space1),
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            tint = if (active) ImmersiveColors.Accent else ImmersiveColors.OnScrim,
-            modifier = Modifier.size(CastKitSizes.playerSecondaryGlyph),
-        )
+        OutlinedIcon(icon = icon, contentDescription = label, tint = tint)
         if (text != null) {
-            Text(
+            OutlinedText(
                 text = text,
                 style = CastKitTheme.typography.labelSmall,
-                color = if (active) ImmersiveColors.Accent else ImmersiveColors.OnScrim,
-                maxLines = 1,
+                color = tint,
             )
         }
+    }
+}
+
+/** 浮层描边文字的描边宽度。按密度换算成像素后交给 [Stroke]。 */
+private val OUTLINE_WIDTH = 1.5.dp
+
+/**
+ * 浮层描边文字：底层把同一个字用 [Stroke] 画一圈黑边，上层填色 —— 字幕那种「白字黑边」。
+ *
+ * 两层必须用同一套 [style]（只差 `drawStyle`），否则字宽字距不同、描边会错位。
+ */
+@Composable
+private fun OutlinedText(
+    text: String,
+    style: TextStyle,
+    modifier: Modifier = Modifier,
+    color: Color = ImmersiveColors.OnScrim,
+) {
+    // TextStyle.drawStyle 里的 Stroke 宽度是**像素**，不随密度走，所以要自己换算
+    val outlinePx = with(LocalDensity.current) { OUTLINE_WIDTH.toPx() }
+    Box(modifier) {
+        Text(
+            text = text,
+            style = style.copy(drawStyle = Stroke(width = outlinePx)),
+            color = ImmersiveColors.Outline,
+            maxLines = 1,
+        )
+        Text(text = text, style = style, color = color, maxLines = 1)
+    }
+}
+
+/**
+ * 浮层描边图标：把同一个矢量图往 8 个方向各画一遍黑色，再叠上白色那层。
+ *
+ * Compose 的 `Icon` 没有描边参数，矢量路径也不方便直接拿出来 stroke，
+ * 用偏移叠画是最省事又稳定的近似（24dp 图标、1.5dp 步进下看不出接缝）。
+ */
+@Composable
+private fun OutlinedIcon(
+    icon: ImageVector,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    size: Dp = CastKitSizes.playerSecondaryGlyph,
+    tint: Color = ImmersiveColors.OnScrim,
+    outline: Color = ImmersiveColors.Outline,
+) {
+    val dirs = listOf(
+        Offset(-1f, 0f), Offset(1f, 0f), Offset(0f, -1f), Offset(0f, 1f),
+        Offset(-1f, -1f), Offset(1f, -1f), Offset(-1f, 1f), Offset(1f, 1f),
+    )
+    Box(modifier.size(size)) {
+        dirs.forEach { d ->
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = outline,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .offset(x = OUTLINE_WIDTH * d.x, y = OUTLINE_WIDTH * d.y),
+            )
+        }
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.fillMaxSize(),
+        )
     }
 }
 
@@ -976,15 +1041,21 @@ private fun PlayerIconSlot(
                 .clickable(enabled = enabled, onClick = onClick),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                imageVector = icon,
+            // 和两个悬浮钮用同一套「白图标 + 黑描边」：底栏也是全透明的，白图标直接压画面
+            OutlinedIcon(
+                icon = icon,
                 contentDescription = label,
                 tint = when {
                     !enabled -> ImmersiveColors.OnScrim.copy(alpha = 0.38f)
                     active -> ImmersiveColors.Accent
                     else -> ImmersiveColors.OnScrim
                 },
-                modifier = Modifier.size(CastKitSizes.playerSecondaryGlyph),
+                // 置灰时描边一起淡下去，否则"不可用"的图标反而被黑边描得更显眼
+                outline = if (enabled) {
+                    ImmersiveColors.Outline
+                } else {
+                    ImmersiveColors.Outline.copy(alpha = 0.38f)
+                },
             )
         }
         if (text != null) {
