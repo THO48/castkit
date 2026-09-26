@@ -16,7 +16,6 @@ import com.dsh.castkit.sender.CastKitApp
 import com.dsh.castkit.sender.MainActivity
 import com.dsh.castkit.sender.Prefs
 import com.dsh.castkit.sender.R
-import com.dsh.castkit.sender.media.PlayabilityChecker
 import com.dsh.castkit.sender.net.LanCast
 import com.dsh.castkit.sender.net.LanCastClient
 import com.dsh.castkit.sender.net.LanCastFileServer
@@ -98,18 +97,13 @@ class VideoCastService : Service() {
     }
 
     private fun startServing(uri: Uri) {
-        // 投屏前预检：接收端走的是同一套系统解码器，发送端解不了的格式（WMV/RMVB 等）它同样解不了。
-        // 在发送端就把话说清楚，用户才不会以为是网络问题。
-        val verdict = PlayabilityChecker.check(this, uri)
-        Log.i(TAG, "预检：$verdict")
-        PlayabilityChecker.blockReason(verdict)?.let { msg ->
-            Log.w(TAG, "预检判定不可播，放弃投送：$msg")
-            CastBus.update {
-                it.copy(phase = CastPhase.ERROR, mode = CastMode.VIDEO, message = msg)
-            }
-            stopSelf()
-            return
-        }
+        // 这里**刻意不做**播放前预检。
+        //
+        // 曾经用 PlayabilityChecker 按「本机有没有解码器」拦截投送，接收端集成 FFmpeg 之后
+        // 这个判断就是错的了：发送端硬件解不了的格式（MPEG-2/PS、隔行片源等），接收端靠软解
+        // 照样能播 —— 用发送端的能力去否决接收端，会把本来能投的片子挡在门外。
+        // 投视频这条链路发送端只做字节转发、不解码，所以能力判断应该完全交给接收端；
+        // 真投不了时接收端会给出具体原因（容器不认识 / 编码解不了）。
         val src = LanCastFileServer.describe(this, uri)
         source = src
         val srv = LanCastFileServer(this)

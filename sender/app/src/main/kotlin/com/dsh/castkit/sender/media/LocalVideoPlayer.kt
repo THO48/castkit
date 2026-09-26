@@ -1,15 +1,23 @@
 package com.dsh.castkit.sender.media
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.Surface
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlin.math.roundToInt
 
 /** 应用内本地播放状态。 */
 data class LocalPlaybackState(
@@ -29,8 +37,30 @@ data class LocalPlaybackState(
 /**
  * 应用内本地视频播放器（选视频即播放，不再只是"选中"）。
  *
- * 用系统 [MediaPlayer] 播本机 `content://` 视频：硬解、有声音、可拖进度，零第三方依赖。
- * MediaPlayer 必须在带 Looper 的线程上使用，这里统一 post 到主线程。
+ * ## 为什么从系统 `MediaPlayer` 换成 Media3 ExoPlayer（2026-09 真机实测）
+ *
+ * 原来用系统 `MediaPlayer` 播 `content://` 视频。它对**解封装**环节毫无自主权 ——
+ * 用的是安卓自带的 `MPEG4Extractor`，而那个解封装器遇到病态容器时间基会**直接弃轨**：
+ *
+ * ```
+ * MPEG4Extractor: track->timescale overflow
+ * ```
+ *
+ * （实测样本：`mdhd` timescale = 2^31−1、VUI `time_scale` = 2^32−2。）
+ * 症状是**有声音、进度条在走、画面全黑**，而且全程**连视频解码器都不会创建** ——
+ * 问题根本不在解码器，换软解也没用。
+ *
+ * Media3 的 `Mp4Extractor` 是它自己用 Java 重写的实现，时间戳走防溢出的
+ * `Util.scaleLargeTimestamp`，换成它之后同一台机器就能正常出画面。
+ *
+ * ## 这里刻意「不做」播放前预检
+ *
+ * 之前这里会先用 `MediaExtractor` + `MediaCodecList` 预检，按「**本机**有没有解码器」
+ * 拦截播放。接收端集成 FFmpeg 之后这个逻辑变成错的：发送端硬件解不了的格式
+ * （如 MPEG-2/PS），接收端靠软解照样能播 —— 按本机能力拦截会把本来能投的片子拦下来。
+ * 所以预检整个撤掉，改成「交给播放器判断 + 按错误类型给人话」。
+ *
+ * 线程约定：ExoPlayer 必须在带 Looper 的线程上创建和访问，这里统一 post 到主线程。
  */
 class LocalVideoPlayer(
     private val context: Context,
@@ -41,7 +71,7 @@ class LocalVideoPlayer(
     val state: StateFlow<LocalPlaybackState> = _state.asStateFlow()
 
     private val main = Handler(Looper.getMainLooper())
-    private var player: MediaPlayer? = null
+    private var player: ExoPlayer? = null
 
     @Volatile
     private var surface: Surface? = null
@@ -50,7 +80,7 @@ class LocalVideoPlayer(
 
     fun setSurface(s: Surface?) {
         surface = s
-        main.post { runCatching { player?.setSurface(s) } }
+        main.post { runCatching { player?.setVideoSurface(s) } }
     }
 
     fun play(uri: Uri, title: String) {
@@ -58,84 +88,107 @@ class LocalVideoPlayer(
             releaseInternal()
             _state.value = LocalPlaybackState(uri = uri, title = title, buffering = true)
             onLog("本地播放: $uri")
-            // 「安卓根本没有这个格式的解码器」（WMV/RMVB 等）要在建 MediaPlayer 之前就说清楚，
-            // 否则用户只会看到一个 error (1, -2147483648)。预检要读文件头，放后台线程做。
-            Thread {
-                val verdict = PlayabilityChecker.check(context, uri)
-                main.post { if (_state.value.uri == uri) startPlayback(uri, verdict) }
-            }.apply { isDaemon = true; name = "castkit-precheck"; start() }
-        }
-    }
 
-    /** 预检通过（或只是没判准）之后真正起播。 */
-    private fun startPlayback(uri: Uri, verdict: Playability) {
-        PlayabilityChecker.logMessage(verdict)?.let { onLog(it) }
-        PlayabilityChecker.blockReason(verdict)?.let { msg ->
-            onLog("预检未通过: $msg")
-            _state.value = _state.value.copy(error = msg, buffering = false)
-            return
-        }
-        val mp = MediaPlayer()
-        player = mp
-        try {
-            mp.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
-                    .build(),
-            )
-            mp.setSurface(surface)
-            mp.setDataSource(context, uri)
-            mp.setOnPreparedListener { p ->
-                _state.value = _state.value.copy(
-                    buffering = false,
-                    playing = true,
-                    durationMs = p.duration.toLong().coerceAtLeast(0),
+            val p = try {
+                ExoPlayer.Builder(context)
+                    .setRenderersFactory(
+                        DefaultRenderersFactory(context)
+                            .setEnableDecoderFallback(true),
+                    )
+                    .build()
+            } catch (e: Throwable) {
+                onLog("ExoPlayer 创建失败: ${e.message}")
+                _state.value = _state.value.copy(error = e.message ?: "播放器创建失败", buffering = false)
+                return@post
+            }
+            player = p
+            try {
+                p.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(C.USAGE_MEDIA)
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                        .build(),
+                    /* handleAudioFocus = */ true,
                 )
-                runCatching { p.start() }
-                startTicker()
+                // Media3 1.11 没有 `C.SEEK_CLOSEST`；精确 seek 改用 SeekParameters 表达，
+                // 与原来 `seekTo(ms, SEEK_CLOSEST)` 的语义一致（播放页进度条依赖这个精度）。
+                p.setSeekParameters(SeekParameters.EXACT)
+                p.setVideoSurface(surface)
+                p.addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        when (playbackState) {
+                            Player.STATE_BUFFERING ->
+                                _state.value = _state.value.copy(buffering = true)
+
+                            Player.STATE_READY -> {
+                                _state.value = _state.value.copy(
+                                    buffering = false,
+                                    playing = p.isPlaying,
+                                    durationMs = p.duration.takeIf { it != C.TIME_UNSET }
+                                        ?.coerceAtLeast(0) ?: 0L,
+                                )
+                                startTicker()
+                            }
+
+                            Player.STATE_ENDED -> {
+                                _state.value = _state.value.copy(
+                                    playing = false,
+                                    positionMs = _state.value.durationMs,
+                                )
+                                stopTicker()
+                            }
+
+                            Player.STATE_IDLE -> Unit
+                        }
+                    }
+
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        _state.value = _state.value.copy(playing = isPlaying, buffering = false)
+                        if (isPlaying) startTicker()
+                    }
+
+                    override fun onVideoSizeChanged(videoSize: VideoSize) {
+                        if (videoSize.width <= 0 || videoSize.height <= 0) return
+                        // MediaPlayer 的 onVideoSizeChanged 给的是**显示**尺寸，
+                        // 这里把像素宽高比折算进去，UI 里的比例计算保持一致
+                        val ratio = videoSize.pixelWidthHeightRatio.takeIf { it > 0f } ?: 1f
+                        _state.value = _state.value.copy(
+                            width = (videoSize.width * ratio).roundToInt(),
+                            height = videoSize.height,
+                        )
+                    }
+
+                    override fun onPlayerError(error: PlaybackException) {
+                        val friendly = friendlyMessage(error)
+                        onLog("本地播放失败 ${error.errorCodeName}: $friendly")
+                        _state.value = _state.value.copy(
+                            error = friendly,
+                            playing = false,
+                            buffering = false,
+                        )
+                        stopTicker()
+                    }
+                })
+                p.setMediaItem(MediaItem.fromUri(uri))
+                p.prepare()
+                p.playWhenReady = true
+            } catch (e: Throwable) {
+                onLog("本地播放加载失败: ${e.message}")
+                _state.value = _state.value.copy(error = e.message ?: "加载失败", buffering = false)
+                releaseInternal()
             }
-            mp.setOnVideoSizeChangedListener { _, w, h ->
-                _state.value = _state.value.copy(width = w, height = h)
-            }
-            mp.setOnInfoListener { _, what, _ ->
-                when (what) {
-                    MediaPlayer.MEDIA_INFO_BUFFERING_START ->
-                        _state.value = _state.value.copy(buffering = true)
-                    MediaPlayer.MEDIA_INFO_BUFFERING_END,
-                    MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START ->
-                        _state.value = _state.value.copy(buffering = false)
-                }
-                false
-            }
-            mp.setOnCompletionListener {
-                _state.value = _state.value.copy(playing = false, positionMs = _state.value.durationMs)
-                stopTicker()
-            }
-            mp.setOnErrorListener { _, what, extra ->
-                val msg = "播放失败 what=$what extra=$extra"
-                onLog(msg)
-                _state.value = _state.value.copy(error = msg, playing = false, buffering = false)
-                true
-            }
-            mp.prepareAsync()
-        } catch (e: Throwable) {
-            onLog("本地播放加载失败: ${e.message}")
-            _state.value = _state.value.copy(error = e.message ?: "加载失败", buffering = false)
-            releaseInternal()
         }
     }
 
     fun toggle() {
         main.post {
             val p = player ?: return@post
-            val playing = runCatching { p.isPlaying }.getOrDefault(false)
-            if (playing) {
-                runCatching { p.pause() }
+            if (p.isPlaying) {
+                p.pause()
                 _state.value = _state.value.copy(playing = false)
                 stopTicker()
             } else {
-                runCatching { p.start() }
+                p.play()
                 _state.value = _state.value.copy(playing = true)
                 startTicker()
             }
@@ -146,8 +199,8 @@ class LocalVideoPlayer(
     fun pause() {
         main.post {
             val p = player ?: return@post
-            if (runCatching { p.isPlaying }.getOrDefault(false)) {
-                runCatching { p.pause() }
+            if (p.isPlaying) {
+                p.pause()
                 _state.value = _state.value.copy(playing = false)
                 stopTicker()
             }
@@ -159,14 +212,7 @@ class LocalVideoPlayer(
             val p = player ?: return@post
             val duration = _state.value.durationMs
             val target = if (duration > 0) positionMs.coerceIn(0, duration) else positionMs.coerceAtLeast(0)
-            runCatching {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    p.seekTo(target, MediaPlayer.SEEK_CLOSEST)
-                } else {
-                    @Suppress("DEPRECATION")
-                    p.seekTo(target.toInt())
-                }
-            }
+            runCatching { p.seekTo(target) }
             _state.value = _state.value.copy(positionMs = target)
         }
     }
@@ -180,8 +226,7 @@ class LocalVideoPlayer(
 
     private fun releaseInternal() {
         stopTicker()
-        runCatching { player?.setSurface(null) }
-        runCatching { player?.reset() }
+        runCatching { player?.setVideoSurface(null) }
         runCatching { player?.release() }
         player = null
     }
@@ -190,12 +235,15 @@ class LocalVideoPlayer(
         stopTicker()
         val r = object : Runnable {
             override fun run() {
-                val p = player ?: return
-                runCatching {
-                    _state.value = _state.value.copy(
-                        positionMs = p.currentPosition.toLong(),
-                        durationMs = if (p.duration > 0) p.duration.toLong() else _state.value.durationMs,
-                    )
+                val p = player
+                if (p != null) {
+                    runCatching {
+                        _state.value = _state.value.copy(
+                            positionMs = p.currentPosition.coerceAtLeast(0),
+                            durationMs = p.duration.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0)
+                                ?: _state.value.durationMs,
+                        )
+                    }
                 }
                 main.postDelayed(this, TICK_MS)
             }
@@ -207,6 +255,28 @@ class LocalVideoPlayer(
     private fun stopTicker() {
         ticker?.let { main.removeCallbacks(it) }
         ticker = null
+    }
+
+    /**
+     * 把 ExoPlayer 的错误码翻译成用户看得懂的一句话。
+     * 直接显示 `ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED` 这种对用户没有意义。
+     */
+    private fun friendlyMessage(error: PlaybackException): String = when (error.errorCode) {
+        PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+        PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED,
+        -> "这个容器格式本机播不了（如 WMV/ASF）"
+
+        PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+        PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
+        PlaybackException.ERROR_CODE_DECODING_FAILED,
+        PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+        -> "本机没有能解这个视频的编码器"
+
+        PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+        PlaybackException.ERROR_CODE_IO_NO_PERMISSION,
+        -> "读不到这个文件（可能已被移动或没有权限）"
+
+        else -> "播放失败（${error.errorCodeName}）"
     }
 
     private companion object {
