@@ -16,17 +16,18 @@ Android + CastKit 发送端 ──HTTP 原始视频文件───────�
 
 ## 下载
 
-最新版 **v1.0.4**：
+最新版 **v1.0.5**：
 
 | 文件 | 装在 | 大小 |
 |---|---|---|
-| [`CastKit-Sender-1.0.3-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.4/CastKit-Sender-1.0.3-debug.apk) | **发送端** —— 要投出去的设备 | 239.3 MB |
-| [`CastKit-Receiver-0.0.31-castkit.3-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.4/CastKit-Receiver-0.0.31-castkit.3-debug.apk) | **接收端** —— 显示画面的设备 | 82.0 MB |
+| [`CastKit-Sender-1.0.5-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.5/CastKit-Sender-1.0.5-debug.apk) | **发送端** —— 要投出去的设备 | 239.3 MB |
+| [`CastKit-Receiver-0.0.31-castkit.4-debug.apk`](https://github.com/THO48/castkit/releases/download/v1.0.5/CastKit-Receiver-0.0.31-castkit.4-debug.apk) | **接收端** —— 显示画面的设备 | 82.0 MB |
 
 全部版本见 [Releases](https://github.com/THO48/castkit/releases)。
 
 | 版本 | 要点 |
 |---|---|
+| [v1.0.5](https://github.com/THO48/castkit/releases/tag/v1.0.5) | 播放页改造：底栏扩成五格（**上一个/下一个**）、**长按画面 3× 快进**、**左右半屏上下滑调系统亮度与系统音量**、记住手动切过的屏幕方向；修掉横屏下**悬浮钮重叠 / 底栏过高 / 底部漏一条底色** |
 | [v1.0.4](https://github.com/THO48/castkit/releases/tag/v1.0.4) | 文件列表补扫媒体库不收录的格式：**`.vob` / `.rmvb` 现在列得出来也投得出去** |
 | [v1.0.3](https://github.com/THO48/castkit/releases/tag/v1.0.3) | 发送端文件列表：**WMV/AVI/MPG 这类片源补上时长、分辨率与缩略图**（系统解析不了的交给 libVLC） |
 | [v1.0.2](https://github.com/THO48/castkit/releases/tag/v1.0.2) | 两端都补上 libVLC 兜底内核：**WMV/ASF 现在发送端能放、也能投** |
@@ -164,6 +165,8 @@ bash tools/install-apk.sh receiver # 导出到 Download/DSHA 供安装
 - `切到横/竖屏` 是**顶部标题栏正下方**的悬浮钮，`投屏` 是**底部控制栏左上方**的悬浮钮 ——
   两个都不在控制排里，因为它们不属于"播放本身"的动作
 - 进度条为自绘的 **3dp 细轨 + 12dp 圆形滑块**；点击画面切换控制栏显隐，3 秒无操作自动隐藏
+- **矮屏（横屏手机）自动换紧凑底栏**：可用高度不足 480dp 时，时间码并到进度条同一行、
+  进度条触摸行 48→40dp、播放键 64→56dp。横屏手机只有 384dp 高，不做这一步底栏会顶到顶栏那一条上去
 - **长按画面 = 3× 快进**：按住期间持续快进并在画面中央显示「3× 快进中」，松手立刻回 1×。
   只在**本机播放**时有效 —— 开始投屏后发送端只是个遥控器，长按不做任何事
 - **左半屏上下滑 = 调亮度**、**右半屏上下滑 = 调系统音量**，都是无级连续调整，画面中央显示
