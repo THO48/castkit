@@ -80,6 +80,10 @@
 
 - 接收端日志除 App 内日志页外，会节流镜像到 `/sdcard/Download/castkit-receiver-logs.txt`
   （`debug/PublicLogWriter`，API 29+ 走 MediaStore，无需权限），外部工具/DSHA 桥可直接读取。
+- **发送端主线程卡顿看门狗**（`debug/MainThreadWatchdog`，仅可调试包启用）：后台线程每 150ms
+  往主线程 post 一个空任务量延迟，>400ms 记一条 `MainBlock`，>1.5s 直接把**主线程当时的调用栈**
+  打出来。存在的理由：`dumpsys gfxinfo` 的直方图**只统计渲染出来的帧**，
+  主线程被 native 调用（`release()`/`stop()`）钉住几秒时那几秒一帧都没有，直方图上反而"很干净"。
 - mDNS 注册结果与 TXT 记录、AirPlay features 位（bit 27 legacy pairing、bit 42 H265）都会写进日志，
   便于定位"iPhone 看不到设备 / 连上没画面"。
 - 设置页提供排查开关：`跳过配对（兼容模式）`（features bit 27=0）与 `重置配对密钥`。
