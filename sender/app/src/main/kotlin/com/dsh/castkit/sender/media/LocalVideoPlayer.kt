@@ -288,6 +288,8 @@ class LocalVideoPlayer(
                     override fun onRenderedFirstFrame() {
                         firstFrameRendered = true
                         cancelWatchdog()
+                        // 续播那次"关键帧对齐"的 seek 已经过关，恢复精确 seek（拖动进度条要它）
+                        runCatching { p.setSeekParameters(SeekParameters.EXACT) }
                         // 报告**真实**用的解码器，而不是"看门狗有没有触发" ——
                         // 有些片源是 Media3 自己就路由到 FFmpeg 的，看门狗根本没机会触发
                         log("画面已出（${decoderModeLabel()}）")
@@ -335,8 +337,16 @@ class LocalVideoPlayer(
                 })
                 p.setMediaItem(MediaItem.fromUri(uri))
                 p.prepare()
-                // 接着上次看：seek 放在 playWhenReady 之前，免得先闪一帧片头
+                // 接着上次看：seek 放在 playWhenReady 之前，免得先闪一帧片头。
+                //
+                // **这一步故意用关键帧对齐（CLOSEST_SYNC）而不是默认的 EXACT**：
+                // EXACT 要"从前一个关键帧解到精确位置"，对长片/大文件是很重的一步；
+                // 播放线程干这种重活时握着 Media3 的内部锁，主线程那边的监听回调就会被钉住
+                // —— 实测在同一台机器上用 6.28GB 片源复现出主线程卡 1.9 秒（用户报的"退出时
+                // 界面在但点不动"）。差一个关键帧（通常几秒）对"接着看"无所谓。
+                // 第一帧出来之后立刻恢复 EXACT，进度条拖动精度不受影响。
                 if (resumeFrom > 0) {
+                    p.setSeekParameters(SeekParameters.CLOSEST_SYNC)
                     runCatching { p.seekTo(resumeFrom) }
                     _state.value = _state.value.copy(positionMs = resumeFrom)
                 }

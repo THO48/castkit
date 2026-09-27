@@ -1,5 +1,6 @@
 package com.dsh.castkit.sender.debug
 
+import android.os.Debug
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -28,6 +29,21 @@ object MainThreadWatchdog {
     @Volatile
     private var started = false
 
+    /**
+     * 卡顿时把 ART 的 GC 计数和堆占用一起带上。
+     *
+     * 为什么需要：栈顶经常是 `Util.usToMs` 这种"不可能耗时"的一行 —— 说明主线程不是卡在
+     * 那句代码上，而是**被别的东西停住了**（stop-the-world 的 GC，或者被 CPU 抢不到时间）。
+     * 光有栈会把人带偏；带上 GC 计数才能区分"是 GC 停的"还是"是锁/IO 停的"。
+     */
+    private fun gcStats(): String = runCatching {
+        fun stat(key: String) = Debug.getRuntimeStat(key) ?: "?"
+        val rt = Runtime.getRuntime()
+        " [gc=${stat("art.gc.gc-count")} blockingGc=${stat("art.gc.blocking-gc-count")}" +
+            " gcTime=${stat("art.gc.gc-time")}ms heap=" +
+            "${(rt.totalMemory() - rt.freeMemory()) / 1048576}M/${rt.maxMemory() / 1048576}M]"
+    }.getOrDefault("")
+
     fun start() {
         if (started) return
         started = true
@@ -48,15 +64,15 @@ object MainThreadWatchdog {
                     // 超过 4.5 秒还没轮到我们：直接抓栈
                     val stack = Looper.getMainLooper().thread.stackTrace
                         .joinToString("\n") { "    at $it" }
-                    Log.w(TAG, "主线程卡死 >${DUMP_MS + 3000}ms，当时的栈：\n$stack")
+                    Log.w(TAG, "主线程卡死 >${DUMP_MS + 3000}ms${gcStats()}，当时的栈：\n$stack")
                     Thread.sleep(1000)
                 }
                 cost >= DUMP_MS -> {
                     val stack = Looper.getMainLooper().thread.stackTrace
                         .joinToString("\n") { "    at $it" }
-                    Log.w(TAG, "主线程卡了 ${cost}ms，当时的栈：\n$stack")
+                    Log.w(TAG, "主线程卡了 ${cost}ms${gcStats()}，当时的栈：\n$stack")
                 }
-                cost >= WARN_MS -> Log.w(TAG, "主线程卡了 ${cost}ms")
+                cost >= WARN_MS -> Log.w(TAG, "主线程卡了 ${cost}ms${gcStats()}")
             }
             Thread.sleep(INTERVAL_MS)
         }
