@@ -430,8 +430,12 @@ class LanVideoPlayer(
                                     playing = p.isPlaying,
                                     durationMs = duration,
                                 )
-                                // 就绪即起播：与原来 MediaPlayer 的 onPrepared -> start() 行为一致
-                                p.playWhenReady = true
+                                // 这里**不能**再写 `p.playWhenReady = true`。
+                                // STATE_READY 不只在首次就绪时来 —— **每次 seek 都会走一遍
+                                // BUFFERING → READY**，无条件起播就等于"暂停后拖一下进度自己续播"
+                                // （实测：暂停在 00:21，点 +10s 变成 00:31 且直接在播）。
+                                // 起播只由 prepare() 之后那次 `playWhenReady = true` 负责（见方法末尾），
+                                // 这样"加载中按暂停"也不会被就绪事件顶掉。
                                 // 发送端开投时可能已经带了本机进度：就绪后立刻跳过去
                                 val pending = pendingSeekMs
                                 pendingSeekMs = -1L

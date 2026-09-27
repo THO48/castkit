@@ -672,6 +672,16 @@ Snackbar，连同 `snackbar_orientation` / `hint_orientation` 两条字符串一
 接收端本身就是播放端，没有"遥控态"，所以恒可用。判断就在一行：
 `seekEnabled = duration > 0 && !remote`（发送端）/ `duration > 0`（接收端）。
 
+**接收端：seek 不许改播放/暂停状态。** Media3 的 seek 会让播放器走一遍
+`BUFFERING → READY`，所以 `LanVideoPlayer` 的 `Player.Listener.STATE_READY` 分支里
+**不能**再写 `playWhenReady = true` —— 那是"就绪即起播"的老写法（对应原来 MediaPlayer 的
+`onPrepared -> start()`），配上"每次 seek 都会重新 READY"就变成
+"暂停在 00:21，点一下 +10s 跳到 00:31 并且自己播起来"。
+起播只由 `prepare()` 之后那一次 `playWhenReady = true` 负责；`STATE_READY` 只更新
+`playing = p.isPlaying` 这类状态。副作用是"加载中按暂停"也不会被就绪事件顶掉。
+libVLC 兜底路径不用额外处理：实测 ASF 片源上"暂停后 +10s"同样保持暂停（libVLC 的
+`time` setter 不会把暂停顶掉）。
+
 令牌放在 `receiver/.../ui/theme/Immersion.kt`，是发送端
 `ui/theme/{Color,Spacing,Type,Shape}.kt` 播放页子集的**镜像拷贝**（与 `LanCast.kt` 同样的处理）：
 两个 App 是两个独立 Gradle 工程，没有公共依赖模块。**改发送端播放页样式时这个文件要一起改。**
