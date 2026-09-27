@@ -50,6 +50,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -195,6 +196,16 @@ fun LanVideoScreen(
         onSeek(target)
     }
 
+    // ★ 手势闭包必须读"最新值"，不能读捕获值。
+    //
+    // `pointerInput(Unit)` 的 block 只在 key 变化时重新挂载，它捕获的是**挂载那一刻**这一版
+    // 局部变量；而 `position` 在进这一页时是 0。少了这层 `rememberUpdatedState`，
+    // 双击跳转就会永远按"0"去算 —— 实测症状正是**左双击永远回到 00:00、右双击永远到 00:10**。
+    // 同一坑项目里早记过（见 `PlayerAdjustLayer` 的六个回调、发送端同一处）。
+    val positionNow = rememberUpdatedState(position)
+    val durationNow = rememberUpdatedState(duration)
+    val seekByNow = rememberUpdatedState<(Long) -> Unit> { seekBy(it) }
+
     /**
      * 双击左/右 1/3：跳 ±10 秒，并在画面中央闪一下「目标时间 + 偏移」
      * （复用横滑那个提示 —— 手感和横滑一致，用户不用学第二套反馈）。
@@ -203,10 +214,13 @@ fun LanVideoScreen(
      * 定时器自己收掉。用计数而不是布尔，是为了连续双击能重新计时。
      */
     fun doubleTapSeek(deltaMs: Long) {
-        if (duration <= 0L) return
-        val target = (position + deltaMs).coerceIn(0L, duration.coerceAtLeast(0L))
-        seekStartMs = position
-        onSeek(target)
+        // 一律读 rememberUpdatedState 里的最新值（见上面的 ★）
+        val dur = durationNow.value
+        if (dur <= 0L) return
+        val start = positionNow.value
+        val target = (start + deltaMs).coerceIn(0L, dur)
+        seekStartMs = start
+        seekByNow.value(deltaMs)
         seekPreviewMs = target
         doubleTapTick++
     }

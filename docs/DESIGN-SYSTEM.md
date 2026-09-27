@@ -576,6 +576,10 @@ Snackbar，连同 `snackbar_orientation` / `hint_orientation` 两条字符串一
   跳转后复用横滑的那块中央提示（箭头 + 目标时间 + `±00:10` 偏移），**700ms 后自己收掉**
   （横滑那条由 `onSeekEnd` 收，双击没有"松手"这一刻，所以另起一个自增计数来重新计时）。
   与底栏 ±10 秒键完全同一个动作：投送中它们控的是**接收端**，双击也一样。
+  **跳转基准必须过 `rememberUpdatedState`**：`pointerInput` 的 block 只在 key 变化时重挂，
+  闭包里读到的 `position` 是**挂载那一刻**的值（进播放页时 = 0）—— 少了这层，
+  就会"无论什么时候左双击都回到 00:00、右双击都到 00:10"（实测踩过，两端都中）。
+  和 `PlayerAdjustLayer` 那六个回调是同一个坑。
   两个 App 同一套分区与反馈，`doubleTapZone(x, width)` 各留一份（两端是两个独立 Gradle 工程，
   和 `Immersion.kt`、`GestureDetectors.kt` 一样是镜像拷贝）。
   **代价要说清楚**：一旦传了 `onDoubleTap`，`onTap` 就得等一个双击超时（`ViewConfiguration` 约 300ms）
