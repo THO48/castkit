@@ -41,6 +41,8 @@ data class LocalPlaybackState(
     val width: Int = 0,
     val height: Int = 0,
     val error: String? = null,
+    /** 本次播放是"从上次的进度接着播"的：非 0 时播放页提示一次「已从 xx:xx 继续播放」。 */
+    val resumedFromMs: Long = 0,
 ) {
     val aspect: Float get() = if (width > 0 && height > 0) width.toFloat() / height else 16f / 9f
 }
@@ -187,8 +189,15 @@ class LocalVideoPlayer(
             firstFrameRendered = false
             fallbackStage = 0
             vlcTried = false
-            _state.value = LocalPlaybackState(uri = uri, title = title, buffering = true)
-            log("本地播放: $uri")
+            // 上次看到一半：这次接着播（记住的进度见 PlaybackProgress）
+            val resumeFrom = PlaybackProgress.get(context, uri)
+            _state.value = LocalPlaybackState(
+                uri = uri,
+                title = title,
+                buffering = true,
+                resumedFromMs = resumeFrom,
+            )
+            log(if (resumeFrom > 0) "本地播放: $uri（从 ${resumeFrom}ms 继续）" else "本地播放: $uri")
 
             val manager = DecoderManager()
             decoderManager = manager
@@ -243,6 +252,8 @@ class LocalVideoPlayer(
                                     positionMs = _state.value.durationMs,
                                 )
                                 stopTicker()
+                                // 看完了：把记住的进度清掉，下次从头播（而不是从结尾接着播）
+                                _state.value.uri?.let { PlaybackProgress.clear(context, it) }
                             }
 
                             Player.STATE_IDLE -> Unit
@@ -304,6 +315,11 @@ class LocalVideoPlayer(
                 })
                 p.setMediaItem(MediaItem.fromUri(uri))
                 p.prepare()
+                // 接着上次看：seek 放在 playWhenReady 之前，免得先闪一帧片头
+                if (resumeFrom > 0) {
+                    runCatching { p.seekTo(resumeFrom) }
+                    _state.value = _state.value.copy(positionMs = resumeFrom)
+                }
                 p.playWhenReady = true
             } catch (e: Throwable) {
                 log("本地播放加载失败: ${e.message}")
@@ -331,6 +347,26 @@ class LocalVideoPlayer(
             }
             runCatching { player?.setPlaybackSpeed(target) }
             log("变速: ${target}×")
+        }
+    }
+
+    /**
+     * 继续播放（不重新加载）。**投送结束后手机上"接着播"用的就是它** ——
+     * 与 [play] 的区别是：不换片源、不重置进度，只把暂停中的播放器放开。
+     */
+    fun resume() {
+        main.post {
+            val vlc = vlcPlayer
+            if (vlc != null) {
+                runCatching { vlc.play() }
+                _state.value = _state.value.copy(playing = true)
+                startTicker()
+                return@post
+            }
+            val p = player ?: return@post
+            p.play()
+            _state.value = _state.value.copy(playing = true)
+            startTicker()
         }
     }
 
@@ -362,6 +398,7 @@ class LocalVideoPlayer(
                     _state.value = _state.value.copy(playing = false)
                     stopTicker()
                 }
+                saveProgress()
                 return@post
             }
             val p = player ?: return@post
@@ -370,6 +407,7 @@ class LocalVideoPlayer(
                 _state.value = _state.value.copy(playing = false)
                 stopTicker()
             }
+            saveProgress()
         }
     }
 
@@ -398,6 +436,8 @@ class LocalVideoPlayer(
     }
 
     private fun releaseInternal() {
+        // 退出播放页 / 换片源 / 出错收尾：先把进度记下来（记住的进度见 PlaybackProgress）
+        saveProgress()
         stopTicker()
         cancelWatchdog()
         cancelVlcWatchdog()
@@ -609,6 +649,8 @@ class LocalVideoPlayer(
                     buffering = false,
                     positionMs = _state.value.durationMs,
                 )
+                // 看完了：清掉"下次接着看"的进度
+                _state.value.uri?.let { PlaybackProgress.clear(context, it) }
             }
 
             VlcMediaPlayer.Event.EncounteredError -> {
@@ -726,6 +768,7 @@ class LocalVideoPlayer(
         var ticks = 0L
         val r = object : Runnable {
             override fun run() {
+                ticks++
                 val vlc = vlcPlayer
                 if (vlc != null) {
                     runCatching {
@@ -745,18 +788,27 @@ class LocalVideoPlayer(
                         )
                     }
                     // 每 5 秒把新增丢帧报一次（只在真丢了才报）
-                    ticks++
                     if (ticks % (DROP_REPORT_MS / TICK_MS) == 0L && droppedFramesTotal > droppedFramesLogged) {
                         val delta = droppedFramesTotal - droppedFramesLogged
                         droppedFramesLogged = droppedFramesTotal
                         log("解码跟不上：最近 5 秒丢 $delta 帧（累计 $droppedFramesTotal，${decoderModeLabel()}）")
                     }
                 }
+                // 每 5 秒记一次播放进度：中途被杀/断电也不会丢掉太多
+                if (ticks % (PROGRESS_SAVE_MS / TICK_MS) == 0L) saveProgress()
                 main.postDelayed(this, TICK_MS)
             }
         }
         ticker = r
         main.postDelayed(r, TICK_MS)
+    }
+
+    /** 把当前进度写进"下次接着看"的记录（没有片源或还没起播时什么都不做）。 */
+    private fun saveProgress() {
+        val s = _state.value
+        val uri = s.uri ?: return
+        if (s.positionMs <= 0) return
+        PlaybackProgress.save(context, uri, s.positionMs, s.durationMs)
     }
 
     private fun stopTicker() {
@@ -792,6 +844,9 @@ class LocalVideoPlayer(
 
         /** 每隔多久把新增丢帧汇总报一次。 */
         const val DROP_REPORT_MS = 5000L
+
+        /** 每隔多久把播放进度写进"下次接着看"的记录。 */
+        const val PROGRESS_SAVE_MS = 5000L
 
         /** 起播后多久还没渲染出第一帧就判定硬解器吃不下（要留出起播缓冲的余量）。 */
         const val NO_FRAME_FALLBACK_MS = 4000L

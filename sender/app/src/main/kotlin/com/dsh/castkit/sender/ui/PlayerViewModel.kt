@@ -35,6 +35,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggle() = player.toggle()
 
+    /** 继续播放（不换片源）：投送结束后手机上"接着播"用这个。 */
+    fun resume() = player.resume()
+
     fun pause() = player.pause()
 
     fun seekTo(positionMs: Long) = player.seekTo(positionMs)

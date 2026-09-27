@@ -91,6 +91,7 @@ import com.dsh.castkit.sender.R
 import com.dsh.castkit.sender.cast.CastBus
 import com.dsh.castkit.sender.cast.CastMode
 import com.dsh.castkit.sender.cast.CastPhase
+import com.dsh.castkit.sender.media.PlaybackProgress
 import com.dsh.castkit.sender.net.LanCastDiscovery
 import com.dsh.castkit.sender.ui.components.CastKitTopBar
 import com.dsh.castkit.sender.ui.components.PlayerAdjustIndicator
@@ -329,16 +330,36 @@ fun VideoPlayerScreen(
         R.string.snackbar_cast_stopped,
         formatTimeCode(castState.remotePositionMs),
     )
+    // 接收端断开后本机接着播（见下面那段 effect）：提示语要说清"现在在手机上放"
+    val takeOverText = stringResource(
+        R.string.snackbar_cast_takeover,
+        formatTimeCode(castState.remotePositionMs),
+    )
+    // 打开视频时如果是从上次的进度接着播，提示一次
+    val resumeText = stringResource(
+        R.string.snackbar_resume_progress,
+        formatTimeCode(state.resumedFromMs),
+    )
+
     LaunchedEffect(remote) {
         if (wasCasting && !remote) {
             // 停止投送后把本机进度对齐到接收端停下的位置，接着看不会跳回开头
             val pos = castState.remotePositionMs
+            val dur = castState.remoteDurationMs
+            // 接收端已经放到（或接近）结尾时不再自动起播：否则手机上会把最后几秒又放一遍
+            val takeOver = pos > 0 && (dur <= 0 || pos < dur - PlaybackProgress.nearEndMs(dur))
             if (pos > 0) vm.seekTo(pos)
-            snackbarHostState.showSnackbar(stoppedText)
+            if (takeOver) vm.resume()
+            snackbarHostState.showSnackbar(if (takeOver) takeOverText else stoppedText)
         } else if (!wasCasting && remote) {
             snackbarHostState.showSnackbar(startedText)
         }
         wasCasting = remote
+    }
+
+    // 上次看到一半：进来就接着播了，这里只负责说一声（key 用 uri + 进度，不会重复弹）
+    LaunchedEffect(state.uri, state.resumedFromMs) {
+        if (state.resumedFromMs > 0) snackbarHostState.showSnackbar(resumeText)
     }
 
     // 控制栏自动隐藏（设计系统定为 3 秒；拖动进度条时不隐藏）

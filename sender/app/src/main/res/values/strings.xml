@@ -129,6 +129,10 @@
     <!-- Snackbar 文案（替代常驻提示语） -->
     <string name="snackbar_cast_started">已开始投送到 %1$s，本机已暂停</string>
     <string name="snackbar_cast_stopped">已停止投送，进度已对齐到 %1$s</string>
+    <!-- 接收端断开 / 自己点停止之后：本机接着播（不是"对齐到某处"那么干） -->
+    <string name="snackbar_cast_takeover">已停止投送，本机从 %1$s 接着播</string>
+    <!-- 打开视频时命中"上次看到一半"的记忆 -->
+    <string name="snackbar_resume_progress">已从上次的 %1$s 继续播放</string>
     <string name="casting_label">投送中</string>
     <string name="cast_receiver">接收端</string>
     <string name="casting_remote_hint">正在投送到 %1$s · 本机已暂停，这里的播放/进度条控制的是接收端</string>
