@@ -151,19 +151,18 @@ private const val FAST_RATE = 3f
 private const val SEEK_STEP_MS = 10_000L
 
 /**
- * 横滑调进度时，**一整屏宽**对应多少时长。
+ * 横滑调进度时，**一整屏宽**对应片长的几分之一。
  *
- * 取**片长的三分之一**，上下夹在 [SEEK_WINDOW_MIN_MS, SEEK_WINDOW_MAX_MS]。
+ * 取三分之一，也就是"整段片子 = 三次整屏滑动"，长短片的**手感比例一致**：
+ * 短片一次滑一小段，长片同样的滑动距离就跨过相应更大的一段时间。
  *
- * 早先的规则是「片长与 90 秒取小」，而短片源时那等于「一屏宽 = 整部片子」——
- * 实测 85 秒的片源在 14 秒处往左轻滑一下就直接掉到 0，看起来就像"每次都从 0 开始"。
- * 现在一屏宽大约跨 1/3 片长（长片再被 90 秒夹住），滑起来是"在当前位置附近挪"，
- * 而不是"一屏跨完整片"。
+ * 两版历史都是坑，记下来免得再走回去：
+ * 1. 最早是「短片取片长本身」—— 85 秒的片源一屏宽 = 整片，轻滑一下就归零；
+ * 2. 之后改成「片长与 90 秒取小」—— 补住了短片，却让**所有超过 4 分半的片子
+ *    退化成同一个灵敏度**（一屏宽恒等于 90 秒），用户实测"长视频和短视频同样距离
+ *    跳过的时间一样"就是这么来的。所以这次不再设上限，纯按比例。
  */
-private const val SEEK_WINDOW_MAX_MS = 90_000L
-
-/** 横滑窗口的下限：再短的片源也不至于蹭一下就跑完。 */
-private const val SEEK_WINDOW_MIN_MS = 5_000L
+private const val SEEK_WINDOW_DIVISOR = 3
 
 /**
  * 页面 3 —— 视频播放器（**覆盖层**，不是导航目的地）。
@@ -312,8 +311,8 @@ fun VideoPlayerScreen(
     val playing = if (remote) castState.remotePlaying else state.playing
     val buffering = if (remote) castState.remoteBuffering else state.buffering
 
-    // 横滑一整屏宽对应多少时长：片长的 1/3，夹在 [5s, 90s] 之间（见常量注释）
-    val seekWindowMs = (duration / 3).coerceIn(SEEK_WINDOW_MIN_MS, SEEK_WINDOW_MAX_MS)
+    // 横滑一整屏宽对应多少时长：片长的 1/3，**不设上限**（见常量注释）
+    val seekWindowMs = (duration / SEEK_WINDOW_DIVISOR).coerceAtLeast(1L)
     // 投送中不做遥控（见 seekToLive 注释），时长为 0 时也没得跳
     val seekGestureEnabled = duration > 0L && !remote
 
