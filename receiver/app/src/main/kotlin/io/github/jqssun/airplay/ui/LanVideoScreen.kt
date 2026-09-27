@@ -47,6 +47,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -127,6 +128,16 @@ fun LanVideoScreen(
     // `seekStartMs` 是按下那一刻的播放位置 —— 目标一律从它算起，**不能**累加当前位置，否则边跳边算会自激。
     var seekPreviewMs by remember { mutableStateOf<Long?>(null) }
     var seekStartMs by remember { mutableStateOf(0L) }
+    /** 双击跳转的序号：每双击一次 +1，用来重新计时把中央提示收掉（连续双击不会提前消失）。 */
+    var doubleTapTick by remember { mutableIntStateOf(0) }
+
+    // 双击跳转的提示 700ms 后自己收掉（横滑那条由 onSeekEnd 负责，双击没有"松手"这一刻）
+    LaunchedEffect(doubleTapTick) {
+        if (doubleTapTick > 0) {
+            delay(DOUBLE_TAP_HINT_MS)
+            seekPreviewMs = null
+        }
+    }
 
     /**
      * 系统栏（顶部状态栏 + 底部手势条）的控制器，可见性**跟着控制栏走**：
@@ -185,6 +196,22 @@ fun LanVideoScreen(
     }
 
     /**
+     * 双击左/右 1/3：跳 ±10 秒，并在画面中央闪一下「目标时间 + 偏移」
+     * （复用横滑那个提示 —— 手感和横滑一致，用户不用学第二套反馈）。
+     *
+     * 提示的收尾：横滑由 `onSeekEnd` 清，双击没有"松手"这一刻，所以靠 [doubleTapTick] 起一个
+     * 定时器自己收掉。用计数而不是布尔，是为了连续双击能重新计时。
+     */
+    fun doubleTapSeek(deltaMs: Long) {
+        if (duration <= 0L) return
+        val target = (position + deltaMs).coerceIn(0L, duration.coerceAtLeast(0L))
+        seekStartMs = position
+        onSeek(target)
+        seekPreviewMs = target
+        doubleTapTick++
+    }
+
+    /**
      * 横滑调进度：**边滑边跳**（不是松手才跳）。
      *
      * 目标一律从**按下那一刻的位置** `seekStartMs` 算起 —— 如果拿当前 `position` 累加，
@@ -202,7 +229,8 @@ fun LanVideoScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(ImmersiveColors.Background)
-            // 单击切换控制栏显隐；**双击 = 播放/暂停**（与发送端同一套交互）。
+            // 单击切换控制栏显隐；**双击按位置分区**：左 1/3 = 后退 10 秒、中间 1/3 = 播放/暂停、
+            // 右 1/3 = 前进 10 秒（中间那条留着，免得丢了"双击暂停"）。
             // 用 detectTapGestures 而不是 clickable：只有它能同时拿到单击与双击。
             //
             // 代价说明：一旦传了 onDoubleTap，`onTap` 就要等一个双击超时（约 300ms）才能确定
@@ -210,7 +238,13 @@ fun LanVideoScreen(
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { overlayVisible = !overlayVisible },
-                    onDoubleTap = { onToggle() },
+                    onDoubleTap = { offset ->
+                        when (doubleTapZone(offset.x, size.width)) {
+                            DoubleTapZone.LEFT -> doubleTapSeek(-SEEK_STEP_MS)
+                            DoubleTapZone.RIGHT -> doubleTapSeek(SEEK_STEP_MS)
+                            DoubleTapZone.CENTER -> onToggle()
+                        }
+                    },
                 )
             },
         contentAlignment = Alignment.Center,
@@ -719,6 +753,19 @@ private val COMPACT_SCRUB_HEIGHT = 32.dp
 
 /** ±10 秒的步长。 */
 private const val SEEK_STEP_MS = 10_000L
+
+/** 双击跳转后中央提示停留多久。 */
+private const val DOUBLE_TAP_HINT_MS = 700L
+
+/** 双击分区：左 / 中 / 右各 1/3。中间那条留给"播放/暂停"，否则双击暂停就没地方点了。 */
+private enum class DoubleTapZone { LEFT, CENTER, RIGHT }
+
+private fun doubleTapZone(x: Float, width: Int): DoubleTapZone = when {
+    width <= 0 -> DoubleTapZone.CENTER
+    x < width / 3f -> DoubleTapZone.LEFT
+    x > width * 2f / 3f -> DoubleTapZone.RIGHT
+    else -> DoubleTapZone.CENTER
+}
 
 /**
  * 横滑调进度时，**一整屏宽**对应片长的几分之一。

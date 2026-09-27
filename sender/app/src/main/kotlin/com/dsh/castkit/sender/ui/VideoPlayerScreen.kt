@@ -58,6 +58,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -150,6 +151,19 @@ private const val FAST_RATE = 3f
 
 /** 快进/快退的步长。 */
 private const val SEEK_STEP_MS = 10_000L
+
+/** 双击跳转后中央提示停留多久。 */
+private const val DOUBLE_TAP_HINT_MS = 700L
+
+/** 双击分区：左 / 中 / 右各 1/3。中间那条留给"播放/暂停"，否则双击暂停就没地方点了。 */
+private enum class DoubleTapZone { LEFT, CENTER, RIGHT }
+
+private fun doubleTapZone(x: Float, width: Int): DoubleTapZone = when {
+    width <= 0 -> DoubleTapZone.CENTER
+    x < width / 3f -> DoubleTapZone.LEFT
+    x > width * 2f / 3f -> DoubleTapZone.RIGHT
+    else -> DoubleTapZone.CENTER
+}
 
 /**
  * 横滑调进度时，**一整屏宽**对应片长的几分之一。
@@ -258,6 +272,16 @@ fun VideoPlayerScreen(
     // `seekStartMs` 是按下那一刻的播放位置 —— 目标一律从它算起，**不能**累加当前位置，否则边跳边算会自激。
     var seekPreviewMs by remember { mutableStateOf<Long?>(null) }
     var seekStartMs by remember { mutableStateOf(0L) }
+    /** 双击跳转的序号：每双击一次 +1，用来重新计时把中央提示收掉（连续双击不会提前消失）。 */
+    var doubleTapTick by remember { mutableIntStateOf(0) }
+
+    // 双击跳转的提示 700ms 后自己收掉（横滑那条由 onSeekEnd 负责，双击没有"松手"这一刻）
+    LaunchedEffect(doubleTapTick) {
+        if (doubleTapTick > 0) {
+            delay(DOUBLE_TAP_HINT_MS)
+            seekPreviewMs = null
+        }
+    }
 
     val casting = castState.mode == CastMode.VIDEO &&
         (castState.phase == CastPhase.RUNNING || castState.phase == CastPhase.CONNECTING)
@@ -388,6 +412,22 @@ fun VideoPlayerScreen(
     }
 
     /**
+     * 双击左/右 1/3：跳 ±10 秒，并在画面中央闪一下「目标时间 + 偏移」
+     * （复用横滑那个提示 —— 手感和横滑一致，用户不用学第二套反馈）。
+     *
+     * 提示的收尾：横滑由 `onSeekEnd` 清，双击没有"松手"这一刻，所以靠 [doubleTapTick] 起一个
+     * 定时器自己收掉。用计数而不是布尔，是为了连续双击能重新计时。
+     */
+    fun doubleTapSeek(deltaMs: Long) {
+        if (duration <= 0L) return
+        val target = (position + deltaMs).coerceIn(0L, duration.coerceAtLeast(0L))
+        seekStartMs = position
+        seekBy(deltaMs)          // 投送中它控的是接收端，与底栏 ±10 秒键一致
+        seekPreviewMs = target
+        doubleTapTick++
+    }
+
+    /**
      * 横滑调进度：**边滑边跳**（不是松手才跳），而且**只调本机**。
      *
      * 不做遥控是有意的：投送中发送端只是一块遥控面板，那里没有画面可对着滑；
@@ -423,7 +463,8 @@ fun VideoPlayerScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(ImmersiveColors.Background)
-            // 单击切换控制栏显隐；**双击 = 播放/暂停**；长按 = 快进（按住期间持续，松手恢复）。
+            // 单击切换控制栏显隐；**双击按位置分区**：左 1/3 = 后退 10 秒、中间 1/3 = 播放/暂停、
+            // 右 1/3 = 前进 10 秒（中间那条留着，免得丢了"双击暂停"）；长按 = 快进。
             // 用 detectTapGestures 而不是 clickable + combinedClickable：只有它能拿到
             // "双击"和"长按开始 / 松手"这几个时机，而快进必须成对。
             //
@@ -433,8 +474,14 @@ fun VideoPlayerScreen(
             .pointerInput(remote) {
                 detectTapGestures(
                     onTap = { overlayVisible = !overlayVisible },
-                    // 投送中本机是遥控器，双击暂停的是**接收端**（和底栏那个播放键同一个动作）
-                    onDoubleTap = { if (remote) onRemoteToggle() else vm.toggle() },
+                    onDoubleTap = { offset ->
+                        when (doubleTapZone(offset.x, size.width)) {
+                            DoubleTapZone.LEFT -> doubleTapSeek(-SEEK_STEP_MS)
+                            DoubleTapZone.RIGHT -> doubleTapSeek(SEEK_STEP_MS)
+                            // 投送中本机是遥控器，双击暂停的是**接收端**（和底栏那个播放键同一个动作）
+                            DoubleTapZone.CENTER -> if (remote) onRemoteToggle() else vm.toggle()
+                        }
+                    },
                     onLongPress = {
                         if (!remote && !speedHeld) {
                             speedHeld = true
