@@ -359,12 +359,18 @@ fun VideoPlayerScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(ImmersiveColors.Background)
-            // 单击切换控制栏显隐；长按 = 快进（按住期间持续，松手恢复）。
+            // 单击切换控制栏显隐；**双击 = 播放/暂停**；长按 = 快进（按住期间持续，松手恢复）。
             // 用 detectTapGestures 而不是 clickable + combinedClickable：只有它能拿到
-            // "长按开始 / 松手"这两个时机，而快进必须成对。
+            // "双击"和"长按开始 / 松手"这几个时机，而快进必须成对。
+            //
+            // 代价说明：一旦传了 onDoubleTap，`onTap` 就要等一个双击超时（约 300ms）才能确定
+            // "没有第二下"，所以单击唤出控制栏会比以前慢一点点。这是"单击 / 双击并存"的固有代价，
+            // 换任何实现都一样（除非允许第一下就先把控制栏翻出来、第二下再翻回去，那样会闪一下）。
             .pointerInput(remote) {
                 detectTapGestures(
                     onTap = { overlayVisible = !overlayVisible },
+                    // 投送中本机是遥控器，双击暂停的是**接收端**（和底栏那个播放键同一个动作）
+                    onDoubleTap = { if (remote) onRemoteToggle() else vm.toggle() },
                     onLongPress = {
                         if (!remote && !speedHeld) {
                             speedHeld = true

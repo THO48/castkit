@@ -14,7 +14,7 @@ import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -178,10 +178,17 @@ fun LanVideoScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(ImmersiveColors.Background)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-            ) { overlayVisible = !overlayVisible },
+            // 单击切换控制栏显隐；**双击 = 播放/暂停**（与发送端同一套交互）。
+            // 用 detectTapGestures 而不是 clickable：只有它能同时拿到单击与双击。
+            //
+            // 代价说明：一旦传了 onDoubleTap，`onTap` 就要等一个双击超时（约 300ms）才能确定
+            // "没有第二下"，所以单击唤出控制栏会比以前慢一点点。这是"单击 / 双击并存"的固有代价。
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { overlayVisible = !overlayVisible },
+                    onDoubleTap = { onToggle() },
+                )
+            },
         contentAlignment = Alignment.Center,
     ) {
         VideoSurfaceView(

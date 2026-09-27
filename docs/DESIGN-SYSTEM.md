@@ -559,6 +559,12 @@ Snackbar，连同 `snackbar_orientation` / `hint_orientation` 两条字符串一
 **交互**：
 
 - 点击画面任意处切换控制栏显隐（`indication = null`，无涟漪）。
+- **双击画面 = 播放/暂停**（`detectTapGestures` 的 `onDoubleTap`）。投送中本机是遥控器，
+  双击暂停的是**接收端** —— 与底栏那个播放键同一个动作，不算新入口。
+  **代价要说清楚**：一旦传了 `onDoubleTap`，`onTap` 就得等一个双击超时（`ViewConfiguration` 约 300ms）
+  才能确定"没有第二下"，所以单击唤出控制栏会比以前慢一点点。这是"单击 / 双击并存"的固有代价，
+  换任何实现都一样（除非允许第一下就先把控制栏翻出来、第二下再翻回去，那样会明显闪一下）。
+  接收端 `LanVideoScreen` 用的是同一套写法。
 - **长按画面 = 3× 快进**：按住期间保持，画面中央显示「3× 快进中」的胶囊提示，松手立刻回 1×。
   用 `detectTapGestures` 的 `onLongPress`（开始）+ `onPress` 里的 `tryAwaitRelease()`（松手）配对实现——
   这个 API 只有 `onPress` 拿得到 `awaitRelease`，`onLongPress` 是普通 lambda，所以必须拆两半。
@@ -626,7 +632,8 @@ Snackbar，连同 `snackbar_orientation` / `hint_orientation` 两条字符串一
 
 接收端的局域网播放页（`receiver/.../ui/LanVideoScreen.kt`）**刻意复用发送端这一套视觉语言**，
 不是另起一套：顶栏与底栏全透明、白字白图标带投影、自绘 3dp/12dp 进度条、3 秒自动收起、
-系统栏跟着控制栏显隐、矮屏自动换紧凑档、中央竖滑调亮度/音量的浮层逐像素一致。
+系统栏跟着控制栏显隐、矮屏自动换紧凑档、中央竖滑调亮度/音量的浮层逐像素一致，
+**点击画面切控制栏、双击画面播放/暂停** 的手势也一致（含上面那条"单击会晚约 300ms"的代价）。
 
 令牌放在 `receiver/.../ui/theme/Immersion.kt`，是发送端
 `ui/theme/{Color,Spacing,Type,Shape}.kt` 播放页子集的**镜像拷贝**（与 `LanCast.kt` 同样的处理）：
