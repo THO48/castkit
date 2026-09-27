@@ -3,7 +3,7 @@ package io.github.jqssun.airplay.renderer
 import android.content.Context
 import android.net.Uri
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
 import android.view.Surface
 import android.view.SurfaceHolder
 import androidx.media3.common.AudioAttributes
@@ -92,7 +92,18 @@ class LanVideoPlayer(
     private val _state = MutableStateFlow(LanVideoState())
     val state: StateFlow<LanVideoState> = _state.asStateFlow()
 
-    private val main = Handler(Looper.getMainLooper())
+    /**
+     * **播放器自己的线程**（不是主线程）。
+     *
+     * 为什么：Media3 把渲染器/分析回调投递到**播放器所在的 Looper**，新版里这类回调是**逐帧**的
+     * （`onVideoFrameProcessingOffset`），每个都要读一次播放位置（拿播放器内部锁 + 走时间线）。
+     * 挂在主线程上时，长片退出播放页会为了排完这些积压**单帧耗时 2 秒**
+     * （发送端实测 `Davey! duration=2059ms`，用户报"画面在但点不动"）。两端同一套做法。
+     *
+     * `ExoPlayer` 要求所有调用都在同一个 Looper 上，所以本类**所有**播放器操作都必须走 [handler]。
+     */
+    private val playerThread = HandlerThread("castkit-lan-video").apply { start() }
+    private val handler = Handler(playerThread.looper)
     private var player: ExoPlayer? = null
 
     /** 运行时解码器选择器（NextLib）。必须与 player 一对一，且在 prepare 之前 attach。 */
@@ -143,7 +154,7 @@ class LanVideoPlayer(
     /** UI 提供/回收渲染 Surface（可能在 play 之前或之后到达）。 */
     fun setSurface(s: Surface?) {
         surface = s
-        main.post {
+        handler.post {
             val vlc = vlcPlayer
             if (vlc != null) {
                 // libVLC 换 Surface 必须 detach -> set -> attach，直接 set 可能不生效
@@ -165,7 +176,7 @@ class LanVideoPlayer(
      */
     fun setSurfaceHolder(holder: SurfaceHolder) {
         surfaceHolder = holder
-        main.post {
+        handler.post {
             val vlc = vlcPlayer ?: return@post
             if (runCatching { vlc.vlcVout.areViewsAttached() }.getOrDefault(false)) {
                 applyVlcWindowSize(vlc.vlcVout)
@@ -277,16 +288,16 @@ class LanVideoPlayer(
                         buffering = false,
                         ended = "接收端无法播放该视频",
                     )
-                    main.postDelayed({ stopInternal() }, ERROR_EXIT_DELAY_MS)
+                    handler.postDelayed({ stopInternal() }, ERROR_EXIT_DELAY_MS)
                 }
             }
         }
         vlcWatchdog = r
-        main.postDelayed(r, delayMs)
+        handler.postDelayed(r, delayMs)
     }
 
     private fun cancelVlcWatchdog() {
-        vlcWatchdog?.let { main.removeCallbacks(it) }
+        vlcWatchdog?.let { handler.removeCallbacks(it) }
         vlcWatchdog = null
     }
 
@@ -371,11 +382,11 @@ class LanVideoPlayer(
             buffering = false,
             ended = message,
         )
-        main.postDelayed({ stopInternal() }, ERROR_EXIT_DELAY_MS)
+        handler.postDelayed({ stopInternal() }, ERROR_EXIT_DELAY_MS)
     }
 
     fun play(url: String, title: String) {
-        main.post {
+        handler.post {
             releaseInternal()
             pendingSeekMs = -1L
             firstFrameRendered = false
@@ -393,7 +404,10 @@ class LanVideoPlayer(
                 .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
 
             val p = try {
-                ExoPlayer.Builder(context).setRenderersFactory(renderersFactory).build()
+                ExoPlayer.Builder(context)
+                    .setLooper(handler.looper)
+                    .setRenderersFactory(renderersFactory)
+                    .build()
             } catch (e: Throwable) {
                 onLog("ExoPlayer 创建失败: ${e.message}")
                 _state.value = _state.value.copy(error = e.message ?: "播放器创建失败", buffering = false)
@@ -529,7 +543,7 @@ class LanVideoPlayer(
                             buffering = false,
                             ended = friendly,
                         )
-                        main.postDelayed({ stopInternal() }, ERROR_EXIT_DELAY_MS)
+                        handler.postDelayed({ stopInternal() }, ERROR_EXIT_DELAY_MS)
                     }
                 })
                 // 软件解码路径（FFmpeg / 系统软解）没有 MediaCodec 的 `video-debug-dec` 统计，
@@ -554,7 +568,7 @@ class LanVideoPlayer(
     }
 
     fun toggle() {
-        main.post {
+        handler.post {
             val vlc = vlcPlayer
             if (vlc != null) {
                 if (vlc.isPlaying) vlc.pause() else vlc.play()
@@ -575,7 +589,7 @@ class LanVideoPlayer(
     }
 
     fun play() {
-        main.post {
+        handler.post {
             val vlc = vlcPlayer
             if (vlc != null) {
                 vlc.play()
@@ -591,7 +605,7 @@ class LanVideoPlayer(
     }
 
     fun pause() {
-        main.post {
+        handler.post {
             val vlc = vlcPlayer
             if (vlc != null) {
                 if (vlc.isPlaying) vlc.pause()
@@ -608,7 +622,7 @@ class LanVideoPlayer(
     }
 
     fun seekTo(positionMs: Long) {
-        main.post {
+        handler.post {
             val duration = _state.value.durationMs
             val target = if (duration > 0) positionMs.coerceIn(0, duration) else positionMs.coerceAtLeast(0)
 
@@ -633,14 +647,14 @@ class LanVideoPlayer(
 
     /** 用户/发送端要求停止：回到空闲状态。 */
     fun stop() {
-        main.post {
+        handler.post {
             stopInternal()
             onLog("局域网视频已停止")
         }
     }
 
     fun release() {
-        main.post { releaseAll() }
+        handler.post { releaseAll() }
     }
 
     private fun stopInternal() {
@@ -719,16 +733,16 @@ class LanVideoPlayer(
                         buffering = false,
                         ended = "接收端无法播放该视频",
                     )
-                    main.postDelayed({ stopInternal() }, ERROR_EXIT_DELAY_MS)
+                    handler.postDelayed({ stopInternal() }, ERROR_EXIT_DELAY_MS)
                 }
             }
         }
         watchdog = r
-        main.postDelayed(r, delayMs)
+        handler.postDelayed(r, delayMs)
     }
 
     private fun cancelWatchdog() {
-        watchdog?.let { main.removeCallbacks(it) }
+        watchdog?.let { handler.removeCallbacks(it) }
         watchdog = null
     }
 
@@ -800,15 +814,15 @@ class LanVideoPlayer(
                         onLog("解码跟不上：最近 5 秒丢 $delta 帧（累计 $droppedFramesTotal，${decoderModeLabel()}）")
                     }
                 }
-                main.postDelayed(this, TICK_MS)
+                handler.postDelayed(this, TICK_MS)
             }
         }
         ticker = r
-        main.postDelayed(r, TICK_MS)
+        handler.postDelayed(r, TICK_MS)
     }
 
     private fun stopTicker() {
-        ticker?.let { main.removeCallbacks(it) }
+        ticker?.let { handler.removeCallbacks(it) }
         ticker = null
     }
 

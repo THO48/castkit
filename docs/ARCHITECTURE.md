@@ -29,6 +29,14 @@
 
 ## 关键数据流
 
+> **播放器不挂在主线程上。** 两端的 Media3/ExoPlayer（发送端 `media/LocalVideoPlayer`、
+> 接收端 `renderer/LanVideoPlayer`）都跑在各自的 `HandlerThread` 上，所有对播放器的调用
+> 都经由那个 Looper。原因：Media3 把渲染器/分析回调投递到**播放器所在的 Looper**，
+> 新版里这类回调是**逐帧**的（`onVideoFrameProcessingOffset`），每个都要读播放位置
+> （拿播放器内部锁 + 走时间线）。挂在主线程上时，长片退出播放页会为了排完这些积压
+> **单帧耗时 2 秒**（`Davey! duration=2059ms`），用户感受就是"画面在但点不动"。
+> 判定过程见 `debug/MainThreadWatchdog`（帧统计看不到主线程阻塞）。
+
 ### AirPlay 屏幕镜像（iOS/iPadOS/macOS）
 1. 接收端通过 mDNS 广播 `_airplay._tcp`（含 `features`/`pk` 等 TXT），iPhone 的「屏幕镜像」列表中出现设备。
 2. 发送端做 FairPlay 握手（`/fp-setup`，由 UxPlay + playfair 处理）解出 AES 密钥。

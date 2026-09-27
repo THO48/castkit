@@ -3,7 +3,7 @@ package com.dsh.castkit.sender.media
 import android.content.Context
 import android.net.Uri
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.view.Surface
@@ -91,8 +91,22 @@ class LocalVideoPlayer(
 
     private val _state = MutableStateFlow(LocalPlaybackState())
     val state: StateFlow<LocalPlaybackState> = _state.asStateFlow()
+    /**
+     * **播放器自己的线程**（不是主线程）。
+     *
+     * 为什么必须这样：Media3 把渲染器/分析回调投递到**播放器所在的 Looper**，而新版里这类回调
+     * 是**逐帧**的（`onVideoFrameProcessingOffset`），每个回调都要读一次播放位置（拿播放器的
+     * 内部锁 + 走时间线）。挂在主线程上的后果是真机实测出来的：长片退出播放页时，主线程为了排完
+     * 这些积压，**单帧耗时 2059ms**（系统 `Davey! duration=2059ms`），用户看到的就是
+     * "画面在但点不动"——而且它跟"保存播放进度"毫无关系（那条路早就在后台线程，实测 0ms）。
+     * 播放器挪到自己的线程后，这些回调不再和 UI 抢主线程，卡顿从根上消失。
+     *
+     * 注意：`ExoPlayer` 要求"所有调用都在同一个 Looper 上"——所以本类**所有**对播放器的操作
+     * 都必须经由 [handler]（曾经是主线程 Handler，现在指向播放器线程），不能直接在主线程碰 player。
+     */
+    private val playerThread = HandlerThread("castkit-player").apply { start() }
+    private val handler = Handler(playerThread.looper)
 
-    private val main = Handler(Looper.getMainLooper())
     private var player: ExoPlayer? = null
 
     /**
@@ -170,7 +184,7 @@ class LocalVideoPlayer(
     fun setSurface(s: Surface?) {
         surface = s
         log("setSurface ${s?.let { "valid=${it.isValid} id=${System.identityHashCode(it)}" } ?: "null"} vlc=${vlcPlayer != null}")
-        main.post {
+        handler.post {
             val vlc = vlcPlayer
             if (vlc != null) {
                 // libVLC 换 Surface 必须 detach -> set -> attach，直接 set 可能不生效
@@ -189,7 +203,7 @@ class LocalVideoPlayer(
     /** 渲染区域的实际像素尺寸只能从 SurfaceHolder 拿；libVLC 在跑时拿到就立刻纠正。 */
     fun setSurfaceHolder(holder: SurfaceHolder) {
         surfaceHolder = holder
-        main.post {
+        handler.post {
             val vlc = vlcPlayer ?: return@post
             if (runCatching { vlc.vlcVout.areViewsAttached() }.getOrDefault(false)) {
                 applyVlcWindowSize(vlc.vlcVout)
@@ -198,7 +212,7 @@ class LocalVideoPlayer(
     }
 
     fun play(uri: Uri, title: String) {
-        main.post {
+        handler.post {
             releaseInternal()
             firstFrameRendered = false
             fallbackStage = 0
@@ -221,7 +235,12 @@ class LocalVideoPlayer(
                 .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
 
             val p = try {
-                ExoPlayer.Builder(context).setRenderersFactory(renderersFactory).build()
+                // 显式指定 Looper：播放器（连同它的所有回调）都活在这条自己的线程上，
+                // 不去占主线程 —— 理由见 playerThread 的注释
+                ExoPlayer.Builder(context)
+                    .setLooper(handler.looper)
+                    .setRenderersFactory(renderersFactory)
+                    .build()
             } catch (e: Throwable) {
                 log("ExoPlayer 创建失败: ${e.message}")
                 _state.value = _state.value.copy(error = e.message ?: "播放器创建失败", buffering = false)
@@ -368,7 +387,7 @@ class LocalVideoPlayer(
      */
     fun setSpeed(rate: Float) {
         val target = rate.coerceIn(MIN_RATE, MAX_RATE)
-        main.post {
+        handler.post {
             val vlc = vlcPlayer
             if (vlc != null) {
                 runCatching { vlc.rate = target }
@@ -385,7 +404,7 @@ class LocalVideoPlayer(
      * 与 [play] 的区别是：不换片源、不重置进度，只把暂停中的播放器放开。
      */
     fun resume() {
-        main.post {
+        handler.post {
             val vlc = vlcPlayer
             if (vlc != null) {
                 runCatching { vlc.play() }
@@ -401,7 +420,7 @@ class LocalVideoPlayer(
     }
 
     fun toggle() {
-        main.post {
+        handler.post {
             if (vlcPlayer != null) {
                 toggleVlc()
                 return@post
@@ -421,7 +440,7 @@ class LocalVideoPlayer(
 
     /** 暂停（已经在暂停/未起播则什么都不做）。 */
     fun pause() {
-        main.post {
+        handler.post {
             vlcPlayer?.let { mp ->
                 if (mp.isPlaying) {
                     runCatching { mp.pause() }
@@ -442,7 +461,7 @@ class LocalVideoPlayer(
     }
 
     fun seekTo(positionMs: Long) {
-        main.post {
+        handler.post {
             val duration = _state.value.durationMs
             val target = if (duration > 0) positionMs.coerceIn(0, duration) else positionMs.coerceAtLeast(0)
             vlcPlayer?.let { mp ->
@@ -457,7 +476,7 @@ class LocalVideoPlayer(
     }
 
     fun release() {
-        main.post {
+        handler.post {
             releaseInternal()
             // libVLC 实例是进程级共享的（VlcHolder），这里**不能**放掉它 ——
             // 列表页的媒体信息探测和缩略图抽帧还在用它。
@@ -623,11 +642,11 @@ class LocalVideoPlayer(
             }
         }
         vlcWatchdog = r
-        main.postDelayed(r, delayMs)
+        handler.postDelayed(r, delayMs)
     }
 
     private fun cancelVlcWatchdog() {
-        vlcWatchdog?.let { main.removeCallbacks(it) }
+        vlcWatchdog?.let { handler.removeCallbacks(it) }
         vlcWatchdog = null
     }
 
@@ -780,11 +799,11 @@ class LocalVideoPlayer(
             }
         }
         watchdog = r
-        main.postDelayed(r, delayMs)
+        handler.postDelayed(r, delayMs)
     }
 
     private fun cancelWatchdog() {
-        watchdog?.let { main.removeCallbacks(it) }
+        watchdog?.let { handler.removeCallbacks(it) }
         watchdog = null
     }
 
@@ -833,11 +852,11 @@ class LocalVideoPlayer(
                 }
                 // 每 5 秒记一次播放进度：中途被杀/断电也不会丢掉太多
                 if (ticks % (PROGRESS_SAVE_MS / TICK_MS) == 0L) saveProgress()
-                main.postDelayed(this, TICK_MS)
+                handler.postDelayed(this, TICK_MS)
             }
         }
         ticker = r
-        main.postDelayed(r, TICK_MS)
+        handler.postDelayed(r, TICK_MS)
     }
 
     /**
@@ -860,7 +879,7 @@ class LocalVideoPlayer(
     }
 
     private fun stopTicker() {
-        ticker?.let { main.removeCallbacks(it) }
+        ticker?.let { handler.removeCallbacks(it) }
         ticker = null
     }
 
