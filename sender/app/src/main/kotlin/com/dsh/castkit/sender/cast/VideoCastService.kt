@@ -84,6 +84,16 @@ class VideoCastService : Service() {
                 connectAttempt = 0
                 statusSeen = false
                 lastStatusAt = 0L
+                // 新一次投送：把上一次留下的接收端进度清掉，否则连上之前的这一两秒里
+                // 进度条会先显示上一部片子的位置（收尾时故意保留它，见 teardown）
+                CastBus.update {
+                    it.copy(
+                        remotePositionMs = 0,
+                        remoteDurationMs = 0,
+                        remotePlaying = false,
+                        remoteBuffering = false,
+                    )
+                }
                 startAsForeground(getString(R.string.video_preparing))
                 startServing(uri)
             }
@@ -266,10 +276,12 @@ class VideoCastService : Service() {
             runCatching { controlClient?.close() }
             runCatching { fileServer?.stop() }
         }.apply { isDaemon = true }.start()
+        // **不要清 remotePositionMs / remoteDurationMs**：播放页要靠"最后一次收到的接收端进度"
+        // 把本机进度对齐过去（`LaunchedEffect(remote)` 里 `vm.seekTo(remotePositionMs)`）。
+        // 这里清零过一次，结果所有收尾路径（点停止投送、接收端主动断开、8 秒超时）都变成
+        // "投送结束回到片头重放" —— 接收端明明停在 12 分钟，手机上却从 0 开始。
         CastBus.update {
             it.copy(
-                remotePositionMs = 0,
-                remoteDurationMs = 0,
                 remotePlaying = false,
                 remoteBuffering = false,
             )
