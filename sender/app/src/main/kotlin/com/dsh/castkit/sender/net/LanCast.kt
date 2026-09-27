@@ -55,6 +55,15 @@ object LanCast {
     const val EXT_BYTE = 0x7F
     const val EXT_STATUS = 9
 
+    /**
+     * 接收端用户在本机**主动断开**投送：payload 为空。
+     *
+     * 之前没有这条消息，接收端按返回键只能停掉自己的播放器，发送端要等 8 秒收不到状态回报
+     * 才反应过来 —— 用户看到的就是"接收端断不干净"。旧发送端读到 `0x7F` 会当未知控制码忽略，
+     * 于是自动退回原来的超时兜底，不会出错。
+     */
+    const val EXT_STOP = 10
+
     /** `TYPE_CTRL` 的动作。 */
     const val ACTION_PLAY = 1
     const val ACTION_PAUSE = 2

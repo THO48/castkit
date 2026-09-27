@@ -160,16 +160,24 @@ class VideoCastService : Service() {
             }
         }
         c.onExtended = { type, payload ->
-            if (type == LanCast.EXT_STATUS && payload.size >= 9) {
-                statusSeen = true
-                lastStatusAt = System.currentTimeMillis()
-                CastBus.update {
-                    it.copy(
-                        remotePositionMs = LanCast.u32(payload, 0),
-                        remoteDurationMs = LanCast.u32(payload, 4),
-                        remotePlaying = (payload[8].toInt() and 1) != 0,
-                        remoteBuffering = (payload[8].toInt() and 2) != 0,
-                    )
+            when {
+                type == LanCast.EXT_STATUS && payload.size >= 9 -> {
+                    statusSeen = true
+                    lastStatusAt = System.currentTimeMillis()
+                    CastBus.update {
+                        it.copy(
+                            remotePositionMs = LanCast.u32(payload, 0),
+                            remoteDurationMs = LanCast.u32(payload, 4),
+                            remotePlaying = (payload[8].toInt() and 1) != 0,
+                            remoteBuffering = (payload[8].toInt() and 2) != 0,
+                        )
+                    }
+                }
+                // 接收端用户自己按了「断开投屏」：立刻收尾，别等 8 秒的状态超时
+                type == LanCast.EXT_STOP -> {
+                    Log.i(TAG, "接收端主动断开投送")
+                    teardown("接收端已断开投屏")
+                    stopSelf()
                 }
             }
         }

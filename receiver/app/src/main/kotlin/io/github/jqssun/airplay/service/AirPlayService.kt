@@ -626,7 +626,13 @@ class AirPlayService : LifecycleService(), RaopCallbackHandler, LogListener {
         lanVideoPlayer.setSurfaceHolder(holder)
     }
 
+    /**
+     * 接收端用户点了「断开投屏」/ 返回键：停掉本机播放，**并通知发送端立刻收尾**
+     * （不然发送端要等 8 秒收不到状态回报才结束，看着就像断不掉）。
+     * 发送端发来的 `TYPE_STOP` 走的是 `lanCast.onStopVideo`，不会回到这里、不会形成回环。
+     */
     fun stopLanVideo() {
+        lanCast.notifyUserStopped()
         lanVideoPlayer.stop()
     }
 

@@ -166,6 +166,29 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
         session = null
     }
 
+    /**
+     * 接收端用户在本机主动断开：给发送端发一条 `EXT_STOP`，让对面**立刻**收尾。
+     *
+     * 只发消息、不关连接：连接由发送端收尾时自己关；万一对面是旧版本（忽略这条扩展消息），
+     * 它会照旧按"8 秒收不到状态回报"自己结束 —— 两条路都能收敛。
+     */
+    fun notifyUserStopped() {
+        val s = session
+        if (s == null) {
+            log("用户主动断开：当前没有投屏会话，无需通知发送端")
+            return
+        }
+        log("用户主动断开投屏，通知发送端（EXT_STOP）")
+        // **必须离开主线程**：这个入口是 UI（返回键 / 「断开投屏」按钮）直接调的，
+        // 而 Socket 写入在主线程会被 Android 拦下来 —— 抛的 NetworkOnMainThreadException
+        // message 是 null，早先被 catch 静默吞掉，表现就是"发送端什么都没收到"。
+        // 状态回报走的是会话自己的线程，所以从来没事。
+        Thread(
+            { s.sendExtended(byteArrayOf(LanCast.EXT_STOP.toByte())) },
+            "lancast-user-stop",
+        ).apply { isDaemon = true; start() }
+    }
+
     private fun startStatsLoop() {
         statsThread = Thread({
             var lastFrames = 0L
@@ -385,14 +408,20 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
         fun sendExtended(payload: ByteArray) {
             if (payload.isEmpty() || payload.size > LanCast.MAX_EXT_PAYLOAD) return
             synchronized(outputLock) {
-                val stream = out ?: return
+                val stream = out ?: run {
+                    log("反向消息发送失败：会话输出流已关闭")
+                    return
+                }
                 try {
                     stream.write(LanCast.EXT_BYTE)
                     stream.write(payload.size and 0xFF)
                     stream.write((payload.size ushr 8) and 0xFF)
                     stream.write(payload)
                     stream.flush()
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    // 连类型一起打：NetworkOnMainThreadException 之类的 message 是 null，
+                    // 只打 e.message 会得到一句没用的"失败: null"（真踩过）
+                    log("反向消息发送失败: ${e.javaClass.simpleName} ${e.message}")
                 }
             }
         }

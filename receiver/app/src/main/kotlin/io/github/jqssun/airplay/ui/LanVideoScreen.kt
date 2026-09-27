@@ -18,6 +18,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,6 +39,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -314,6 +316,7 @@ fun LanVideoScreen(
             PlayerTopBar(
                 title = state.title.ifBlank { stringResource(R.string.lan_video_fallback_title) },
                 onBack = onStop,
+                onDisconnect = onStop,
             )
         }
 
@@ -341,10 +344,17 @@ fun LanVideoScreen(
     }
 }
 
-/** 顶栏：只有「返回 + 文件名」，背景全透明（和发送端一致）。 */
+/**
+ * 顶栏：「返回 + 文件名」，背景全透明（和发送端一致）。
+ *
+ * **接收端多一个「断开投屏」**：发送端是发起方，它停投送很直观（点「停止投送」）；
+ * 接收端原来只有返回箭头，用户不知道那算不算"断开"，而且对面要等 8 秒才反应。
+ * 现在这个按钮和返回箭头是同一个动作（停本机 + 立刻通知发送端收尾），
+ * 只是把这件事写成字摆出来。发送端播放页没有这个钮 —— 它自己就是发起方。
+ */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
-private fun PlayerTopBar(title: String, onBack: () -> Unit) {
+private fun PlayerTopBar(title: String, onBack: () -> Unit, onDisconnect: () -> Unit) {
     TopAppBar(
         navigationIcon = {
             IconButton(onClick = onBack) {
@@ -365,11 +375,26 @@ private fun PlayerTopBar(title: String, onBack: () -> Unit) {
                 modifier = Modifier.basicMarquee(),
             )
         },
+        actions = {
+            TextButton(
+                onClick = onDisconnect,
+                // 点击区按下限 48dp 走，别只按文字大小给
+                modifier = Modifier.height(PlayerSizes.minTouchTarget),
+                contentPadding = PaddingValues(horizontal = PlayerSpacing.space3),
+            ) {
+                Text(
+                    text = stringResource(R.string.lan_disconnect),
+                    style = PlayerType.labelMedium.onOverlay(),
+                    color = ImmersiveColors.OnScrim,
+                )
+            }
+        },
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = Color.Transparent,
             scrolledContainerColor = Color.Transparent,
             navigationIconContentColor = ImmersiveColors.OnScrim,
             titleContentColor = ImmersiveColors.OnScrim,
+            actionIconContentColor = ImmersiveColors.OnScrim,
         ),
     )
 }
@@ -460,7 +485,7 @@ private fun PlayerBottomControls(
         }
 
         // 三格：后退 10 秒 | 播放暂停 | 前进 10 秒。
-        // 「退出」在顶栏返回箭头上（发送端同样不在控制排里重复放退出）。
+        // 「退出/断开」在顶栏（返回箭头 + 「断开投屏」），控制排里不重复放。
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,

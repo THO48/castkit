@@ -191,4 +191,6 @@
         <item>最稳定</item>
     </string-array>
     <string name="lan_video_request_title">收到投视频请求，点此播放</string>
+    <!-- CastKit: 局域网投视频播放页 -->
+    <string name="lan_disconnect">断开投屏</string>
 </resources>

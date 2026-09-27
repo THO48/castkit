@@ -62,6 +62,8 @@
     <string name="cd_seek_back_10">Back 10 seconds</string>
     <string name="cd_seek_forward_10">Forward 10 seconds</string>
     <string name="lan_video_fallback_title">Cast video</string>
+    <!-- 接收端主动断开投屏（发送端侧会立刻结束投送） -->
+    <string name="lan_disconnect">Disconnect</string>
     <string name="scale_best_fit">Best fit</string>
     <string name="scale_stretch">Stretch</string>
     <string name="scale_crop">Crop</string>
