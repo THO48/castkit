@@ -121,6 +121,11 @@ fun LanVideoScreen(
     var brightness by remember { mutableStateOf(SystemBrightness.current(context)) }
     var volume by remember { mutableStateOf(SystemVolume.current(context)) }
 
+    // 横滑调进度：`seekPreviewMs` 只是给中央提示看的**目标位置**，跳转本身在滑动过程中就实时做了。
+    // `seekStartMs` 是按下那一刻的播放位置 —— 目标一律从它算起，**不能**累加当前位置，否则边跳边算会自激。
+    var seekPreviewMs by remember { mutableStateOf<Long?>(null) }
+    var seekStartMs by remember { mutableStateOf(0L) }
+
     /**
      * 系统栏（顶部状态栏 + 底部手势条）的控制器，可见性**跟着控制栏走**：
      * 控制栏出现时系统栏一起显示，控制栏收起才一起隐藏（不是进播放页就一律隐藏）。
@@ -169,9 +174,26 @@ fun LanVideoScreen(
     val position = scrubMs ?: state.positionMs
     val duration = state.durationMs
 
+    // 横滑一整屏宽对应多少时长：短片源就取片长本身，免得「蹭一下就跑完」
+    val seekWindowMs = duration.coerceAtMost(SEEK_WINDOW_MS)
+
     fun seekBy(deltaMs: Long) {
         val target = (position + deltaMs).coerceIn(0L, duration.coerceAtLeast(0L))
         onSeek(target)
+    }
+
+    /**
+     * 横滑调进度：**边滑边跳**（不是松手才跳）。
+     *
+     * 目标一律从**按下那一刻的位置** `seekStartMs` 算起 —— 如果拿当前 `position` 累加，
+     * 每跳一次位置就变一次，下一帧又在这个新位置上再加，会自激跑飞。
+     */
+    fun seekToLive(fraction: Float) {
+        if (duration <= 0L) return
+        val t = (seekStartMs + (fraction * seekWindowMs).toLong())
+            .coerceIn(0L, duration.coerceAtLeast(0L))
+        seekPreviewMs = t
+        onSeek(t)
     }
 
     Box(
@@ -231,7 +253,7 @@ fun LanVideoScreen(
         // 竖滑调整层：铺在画面之上、控制栏之下。
         // 放在这里（而不是加在父 Box 的手势里）是为了不跟"单击切控制栏"打架，理由见 PlayerAdjustLayer。
         PlayerAdjustLayer(
-            onStart = { target ->
+            onAdjustStart = { target ->
                 adjusting = target
                 // 每次开始滑动都以当前实际值起步，避免上次滑到哪就永远从哪开始
                 when (target) {
@@ -239,7 +261,7 @@ fun LanVideoScreen(
                     PlayerAdjustTarget.VOLUME -> volume = SystemVolume.current(context)
                 }
             },
-            onDelta = { target, delta ->
+            onAdjustDelta = { target, delta ->
                 when (target) {
                     PlayerAdjustTarget.BRIGHTNESS -> {
                         brightness = (brightness + delta).coerceIn(0f, 1f)
@@ -252,7 +274,14 @@ fun LanVideoScreen(
                     }
                 }
             },
-            onEnd = { adjusting = null },
+            onAdjustEnd = { adjusting = null },
+            onSeekStart = {
+                seekStartMs = position
+                seekPreviewMs = seekStartMs
+            },
+            onSeekDelta = { fraction -> seekToLive(fraction) },
+            onSeekEnd = { seekPreviewMs = null },
+            seekEnabled = duration > 0L,
         )
 
         // 竖滑时的中央提示
@@ -263,6 +292,15 @@ fun LanVideoScreen(
                     PlayerAdjustTarget.BRIGHTNESS -> brightness
                     PlayerAdjustTarget.VOLUME -> volume
                 },
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
+
+        // 横滑调进度时的中央提示：跟手显示目标时间与偏移量
+        seekPreviewMs?.let { target ->
+            PlayerSeekIndicator(
+                positionMs = target,
+                deltaMs = target - seekStartMs,
                 modifier = Modifier.align(Alignment.Center),
             )
         }
@@ -656,3 +694,12 @@ private val COMPACT_SCRUB_HEIGHT = 32.dp
 
 /** ±10 秒的步长。 */
 private const val SEEK_STEP_MS = 10_000L
+
+/**
+ * 横滑调进度时，**一整屏宽**对应多少时长。
+ *
+ * 90 秒是个手感值：整屏滑一遍大约跨一分半，长片不用反复搓、短片又不会太跳。
+ * 片源比它还短时取片长本身（见 `seekWindowMs`），免得「蹭一下就跑完」。
+ * 与发送端同值，两端手感一致。
+ */
+private const val SEEK_WINDOW_MS = 90_000L

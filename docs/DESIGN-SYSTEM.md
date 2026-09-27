@@ -573,6 +573,16 @@ Snackbar，连同 `snackbar_orientation` / `hint_orientation` 两条字符串一
   实现方式是**单独铺一层子节点**（`PlayerAdjustLayer`）而不是加进上面那个手势里：子节点先拿到事件，
   但只在超过 touch slop 之后才 consume，所以快速点击仍归父层、竖向拖动不会被误判成单击。
   控制栏是同一个 Box 里更靠后的兄弟节点，命中优先，所以在进度条上横向拖动不会被这层抢走。
+- **左右滑 = 调进度，边滑边跳**（每个指针事件就 seek 一次，不是松手才跳），画面中央显示
+  方向箭头 + 目标时间 + 偏移量。灵敏度：**一整屏宽 = 90 秒**（片源比 90 秒短时取片长本身，
+  免得"蹭一下就跑完"）；目标一律从**按下那一刻的位置**算起 —— 拿当前 `position` 累加会自激跑飞。
+  **投送中不生效**：那时本机只是一块遥控面板，没有画面可对着滑；要调接收端进度仍走底栏进度条
+  与 ±10 秒按钮。横向与纵向是**同一个 Box 上串联的两个 `pointerInput`**，各自
+  `await*TouchSlopOrCancellation`，谁先越过自己那根轴的 slop 谁 consume、另一个自动放弃 ——
+  换成兄弟节点叠放是不行的（命中测试只把事件交给最上层那一个）。
+  探测器用 `GestureDetectors.kt` 里那两个自定义实现而不是 foundation 自带的：自带的会在
+  `onDragStart` **之前**先调一次 `on*Drag` 且把同一段 overSlop 算两遍，而这里的 `onDragStart`
+  要负责定下"这次调亮度还是调音量"。
 - **两个都是系统级的，退出播放不还原**（原始需求里亮度本来是"仅播放页"，实测下来用户要的是系统级）。
   亮度优先走 `Settings.System.putInt(SCREEN_BRIGHTNESS)`（需要 `WRITE_SETTINGS` 特殊权限）；
   没权限时退回窗口级 `Window.screenBrightness` —— **实测小米 ROM 会把这个窗口值写进系统设置**，
@@ -633,7 +643,11 @@ Snackbar，连同 `snackbar_orientation` / `hint_orientation` 两条字符串一
 接收端的局域网播放页（`receiver/.../ui/LanVideoScreen.kt`）**刻意复用发送端这一套视觉语言**，
 不是另起一套：顶栏与底栏全透明、白字白图标带投影、自绘 3dp/12dp 进度条、3 秒自动收起、
 系统栏跟着控制栏显隐、矮屏自动换紧凑档、中央竖滑调亮度/音量的浮层逐像素一致，
-**点击画面切控制栏、双击画面播放/暂停** 的手势也一致（含上面那条"单击会晚约 300ms"的代价）。
+**点击画面切控制栏、双击画面播放/暂停**的手势也一致（含上面那条"单击会晚约 300ms"的代价）。
+
+**唯一有意的不一致：横滑调进度在两端都实时跟手，但发送端在投送态会整个关掉**（那时它只是遥控面板）；
+接收端本身就是播放端，没有"遥控态"，所以恒可用。判断就在一行：
+`seekEnabled = duration > 0 && !remote`（发送端）/ `duration > 0`（接收端）。
 
 令牌放在 `receiver/.../ui/theme/Immersion.kt`，是发送端
 `ui/theme/{Color,Spacing,Type,Shape}.kt` 播放页子集的**镜像拷贝**（与 `LanCast.kt` 同样的处理）：

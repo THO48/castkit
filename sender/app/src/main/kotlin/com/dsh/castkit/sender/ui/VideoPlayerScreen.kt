@@ -96,6 +96,7 @@ import com.dsh.castkit.sender.ui.components.CastKitTopBar
 import com.dsh.castkit.sender.ui.components.PlayerAdjustIndicator
 import com.dsh.castkit.sender.ui.components.PlayerAdjustLayer
 import com.dsh.castkit.sender.ui.components.PlayerAdjustTarget
+import com.dsh.castkit.sender.ui.components.PlayerSeekIndicator
 import com.dsh.castkit.sender.ui.components.SystemBrightness
 import com.dsh.castkit.sender.ui.components.SystemVolume
 import com.dsh.castkit.sender.ui.theme.CastKitMotion
@@ -148,6 +149,14 @@ private const val FAST_RATE = 3f
 
 /** 快进/快退的步长。 */
 private const val SEEK_STEP_MS = 10_000L
+
+/**
+ * 横滑调进度时，**一整屏宽**对应多少时长。
+ *
+ * 90 秒是个手感值：整屏滑一遍大约跨一分半，长片不用反复搓、短片又不会太跳。
+ * 片源比它还短时取片长本身（见 `seekWindowMs`），免得「蹭一下就跑完」。
+ */
+private const val SEEK_WINDOW_MS = 90_000L
 
 /**
  * 页面 3 —— 视频播放器（**覆盖层**，不是导航目的地）。
@@ -238,6 +247,11 @@ fun VideoPlayerScreen(
     var brightness by remember { mutableStateOf(SystemBrightness.current(context)) }
     var volume by remember { mutableStateOf(SystemVolume.current(context)) }
 
+    // 横滑调进度：`seekPreviewMs` 只是给中央提示看的**目标位置**，跳转本身在滑动过程中就实时做了。
+    // `seekStartMs` 是按下那一刻的播放位置 —— 目标一律从它算起，**不能**累加当前位置，否则边跳边算会自激。
+    var seekPreviewMs by remember { mutableStateOf<Long?>(null) }
+    var seekStartMs by remember { mutableStateOf(0L) }
+
     val casting = castState.mode == CastMode.VIDEO &&
         (castState.phase == CastPhase.RUNNING || castState.phase == CastPhase.CONNECTING)
     val remote = casting
@@ -291,6 +305,11 @@ fun VideoPlayerScreen(
     val playing = if (remote) castState.remotePlaying else state.playing
     val buffering = if (remote) castState.remoteBuffering else state.buffering
 
+    // 横滑一整屏宽对应多少时长：短片源就取片长本身，免得「蹭一下就跑完」
+    val seekWindowMs = duration.coerceAtMost(SEEK_WINDOW_MS)
+    // 投送中不做遥控（见 seekToLive 注释），时长为 0 时也没得跳
+    val seekGestureEnabled = duration > 0L && !remote
+
     // 投送状态切换时给 Snackbar，替代原来那行常驻提示
     var wasCasting by remember { mutableStateOf(false) }
     // 设备名优先：Discovery 列表里还留着这台接收端时用它的友好名（"Android AirPlay"），
@@ -339,6 +358,24 @@ fun VideoPlayerScreen(
     fun seekBy(deltaMs: Long) {
         val target = (position + deltaMs).coerceIn(0L, duration.coerceAtLeast(0L))
         if (remote) onRemoteSeek(target) else vm.seekTo(target)
+    }
+
+    /**
+     * 横滑调进度：**边滑边跳**（不是松手才跳），而且**只调本机**。
+     *
+     * 不做遥控是有意的：投送中发送端只是一块遥控面板，那里没有画面可对着滑；
+     * 要调接收端进度仍然走底栏进度条和 ±10 秒按钮。所以整个横滑手势在投送态直接不启动
+     * （见下面 `seekEnabled`）。
+     *
+     * 目标一律从**按下那一刻的位置** `seekStartMs` 算起 —— 如果拿当前 `position` 累加，
+     * 每跳一次位置就变一次，下一帧又在这个新位置上再加，会自激跑飞。
+     */
+    fun seekToLive(fraction: Float) {
+        if (duration <= 0L) return
+        val t = (seekStartMs + (fraction * seekWindowMs).toLong())
+            .coerceIn(0L, duration.coerceAtLeast(0L))
+        seekPreviewMs = t
+        vm.seekTo(t)
     }
 
     // 长按快进：按下切到 FAST_RATE，松手回 1.0。
@@ -442,10 +479,10 @@ fun VideoPlayerScreen(
             }
         }
 
-        // 竖滑调整层：铺在画面之上、控制栏之下。
-        // 放在这里（而不是加在父 Box 的手势里）是为了不跟"单击/长按"那套打架，理由见 PlayerAdjustLayer。
+        // 竖滑调整 + 横滑调进度：铺在画面之上、控制栏之下。
+        // 放在这里（而不是加在父 Box 的手势里）是为了不跟"单击/双击/长按"那套打架，理由见 PlayerAdjustLayer。
         PlayerAdjustLayer(
-            onStart = { target ->
+            onAdjustStart = { target ->
                 adjusting = target
                 // 每次开始滑动都以当前实际值起步，避免上次滑到哪就永远从哪开始
                 when (target) {
@@ -453,7 +490,7 @@ fun VideoPlayerScreen(
                     PlayerAdjustTarget.VOLUME -> volume = SystemVolume.current(context)
                 }
             },
-            onDelta = { target, delta ->
+            onAdjustDelta = { target, delta ->
                 when (target) {
                     PlayerAdjustTarget.BRIGHTNESS -> {
                         brightness = (brightness + delta).coerceIn(0f, 1f)
@@ -466,7 +503,20 @@ fun VideoPlayerScreen(
                     }
                 }
             },
-            onEnd = { adjusting = null },
+            onAdjustEnd = { adjusting = null },
+            onSeekStart = {
+                // 长按快进和横滑同时活着的话（按住不放再横向拖），让 seek 赢：
+                // 否则松手时既要回 1× 又要落定进度，两个动效会打架
+                if (speedHeld) {
+                    speedHeld = false
+                    fastForward(false)
+                }
+                seekStartMs = position
+                seekPreviewMs = seekStartMs
+            },
+            onSeekDelta = { fraction -> seekToLive(fraction) },
+            onSeekEnd = { seekPreviewMs = null },
+            seekEnabled = seekGestureEnabled,
         )
 
         // 竖滑时的中央提示（与「3× 快进中」同一个位置，两者不会同时出现）
@@ -477,6 +527,15 @@ fun VideoPlayerScreen(
                     PlayerAdjustTarget.BRIGHTNESS -> brightness
                     PlayerAdjustTarget.VOLUME -> volume
                 },
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
+
+        // 横滑调进度时的中央提示：跟手显示目标时间与偏移量
+        seekPreviewMs?.let { target ->
+            PlayerSeekIndicator(
+                positionMs = target,
+                deltaMs = target - seekStartMs,
                 modifier = Modifier.align(Alignment.Center),
             )
         }
