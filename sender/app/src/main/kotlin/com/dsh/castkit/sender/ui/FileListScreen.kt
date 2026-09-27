@@ -43,6 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
@@ -54,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import com.dsh.castkit.sender.R
 import com.dsh.castkit.sender.media.BrowserIconSize
 import com.dsh.castkit.sender.media.FolderEntry
+import com.dsh.castkit.sender.media.PlaybackProgress
 import com.dsh.castkit.sender.media.VideoDurations
 import com.dsh.castkit.sender.media.VideoItem
 import com.dsh.castkit.sender.media.VideoLibrary
@@ -242,8 +244,7 @@ fun FileListScreen(
                 vm = vm,
                 state = state,
                 onPlay = onPlay,
-            )
-        }
+            )        }
     }
 }
 
@@ -261,6 +262,13 @@ private fun LibraryGrid(
     onPlay: (Uri, List<Uri>) -> Unit,
 ) {
     val iconSize = vm.iconSize
+    val context = LocalContext.current
+
+    // 「看到哪了」的进度：内存里只有一份（PlaybackProgress），进页读一次，之后跟着写入更新。
+    // 每格单独去读一次 SharedPreferences 会把同一条字符串解析几十上百遍。
+    LaunchedEffect(Unit) { PlaybackProgress.ensureLoaded(context) }
+    val playbackPositions by PlaybackProgress.positions.collectAsState()
+
     val avatarSize = when (iconSize) {
         BrowserIconSize.TINY -> 40.dp
         BrowserIconSize.SMALL -> 48.dp
@@ -315,6 +323,7 @@ private fun LibraryGrid(
                 LibraryVideoTile(
                     video = video,
                     iconSize = iconSize,
+                    savedPositionMs = playbackPositions[video.uri.toString()] ?: 0L,
                     onPlay = { uri -> onPlay(uri, playlist) },
                 )
             }
@@ -353,6 +362,7 @@ private fun LibraryFolderTile(
 private fun LibraryVideoTile(
     video: VideoItem,
     iconSize: BrowserIconSize,
+    savedPositionMs: Long,
     onPlay: (Uri) -> Unit,
 ) {
     val context = LocalContext.current
@@ -401,6 +411,12 @@ private fun LibraryVideoTile(
         // 网格里同时有 6–8 个可见单元，每个都跑无限循环 marquee 是持续动画开销，
         // 所以网格保持单行省略；播放器页的标题会传 true。
         marqueeTitle = false,
+        // 只看过一半的才画：看过（有记录）且时长已知时给出比例，其余传 null 不画
+        progressFraction = if (savedPositionMs > 0 && duration > 0) {
+            (savedPositionMs.toFloat() / duration).coerceIn(0f, 1f)
+        } else {
+            null
+        },
     )
 }
 

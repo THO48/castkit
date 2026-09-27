@@ -3,6 +3,9 @@ package com.dsh.castkit.sender.media
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * 每部视频记住播放进度：下次打开接着看。
@@ -30,6 +33,26 @@ object PlaybackProgress {
     private const val MIN_SAVE_MS = 5_000L
 
     /**
+     * 全量进度表（`Uri` 原文 → 位置 ms）。
+     *
+     * 文件列表要按格子画"缩略图下面那条进度条" —— 每格单独去读一次 SharedPreferences
+     * 会把同一条字符串解析几十上百遍，所以内存里留一份、磁盘只在启动时读一次，
+     * 写入时同步更新并发射给 UI。
+     */
+    private val _positions = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val positions: StateFlow<Map<String, Long>> = _positions.asStateFlow()
+
+    @Volatile
+    private var loaded = false
+
+    /** 首次使用把磁盘记录读进内存（幂等；文件列表进页时调一次即可）。 */
+    fun ensureLoaded(context: Context) {
+        if (loaded) return
+        loaded = true
+        _positions.value = readFromDisk(context)
+    }
+
+    /**
      * 「已经看完」的阈值：默认 30 秒，但短片要按片长收窄 ——
      * 20 秒的片子总不能让后 30 秒都算"已看完"，那样它永远记不住进度。
      */
@@ -37,7 +60,10 @@ object PlaybackProgress {
         if (durationMs > 0) NEAR_END_MS.coerceAtMost(durationMs / 4) else NEAR_END_MS
 
     /** 上次看到哪（毫秒）。没有记录返回 0。 */
-    fun get(context: Context, uri: Uri): Long = read(context)[uri.toString()] ?: 0L
+    fun get(context: Context, uri: Uri): Long {
+        ensureLoaded(context)
+        return _positions.value[uri.toString()] ?: 0L
+    }
 
     /** 记一次进度；贴到片尾时改为清掉。 */
     fun save(context: Context, uri: Uri, positionMs: Long, durationMs: Long) {
@@ -46,26 +72,34 @@ object PlaybackProgress {
             clear(context, uri)
             return
         }
+        ensureLoaded(context)
         val key = uri.toString()
         val entries = LinkedHashMap<String, Long>(MAX_ENTRIES)
         entries[key] = positionMs
-        read(context).forEach { (k, v) -> if (k != key && entries.size < MAX_ENTRIES) entries[k] = v }
-        write(context, entries)
+        _positions.value.forEach { (k, v) -> if (k != key && entries.size < MAX_ENTRIES) entries[k] = v }
+        publish(context, entries)
     }
 
     fun clear(context: Context, uri: Uri) {
+        ensureLoaded(context)
         val key = uri.toString()
-        val map = read(context)
+        val map = _positions.value
         if (!map.containsKey(key)) return
         val entries = LinkedHashMap<String, Long>(map.size)
         map.forEach { (k, v) -> if (k != key) entries[k] = v }
-        write(context, entries)
+        publish(context, entries)
+    }
+
+    /** 内存表与磁盘一起更新，并把新表发射给 UI。 */
+    private fun publish(context: Context, entries: Map<String, Long>) {
+        _positions.value = entries
+        writeToDisk(context, entries)
     }
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREF, Context.MODE_PRIVATE)
 
-    private fun read(context: Context): Map<String, Long> = runCatching {
+    private fun readFromDisk(context: Context): Map<String, Long> = runCatching {
         val raw = prefs(context).getString(KEY, null).orEmpty()
         val out = LinkedHashMap<String, Long>()
         raw.lineSequence().forEach { line ->
@@ -80,7 +114,7 @@ object PlaybackProgress {
         emptyMap()
     }
 
-    private fun write(context: Context, entries: Map<String, Long>) {
+    private fun writeToDisk(context: Context, entries: Map<String, Long>) {
         val text = entries.entries.take(MAX_ENTRIES).joinToString("\n") { "${it.key}\t${it.value}" }
         runCatching { prefs(context).edit().putString(KEY, text).apply() }
             .onFailure { Log.w(TAG, "写入播放进度失败", it) }

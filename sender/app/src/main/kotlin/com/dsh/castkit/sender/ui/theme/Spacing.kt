@@ -79,6 +79,9 @@ object CastKitSizes {
     /** 时长角标圆角。 */
     val durationBadgeCorner = 4.dp
 
+    /** 缩略图下方那条「看到哪了」的进度条高度（很窄，见 VideoTile）。 */
+    val tileProgressHeight = 3.dp
+
     /** 文件夹圆形图标直径。 */
     val folderAvatar = 56.dp
 

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -27,6 +28,7 @@ import com.dsh.castkit.sender.ui.CastKitTheme
 import com.dsh.castkit.sender.ui.theme.CastKitSizes
 import com.dsh.castkit.sender.ui.theme.CastKitSpacing
 import com.dsh.castkit.sender.ui.theme.ImmersiveColors
+import com.dsh.castkit.sender.ui.theme.LibraryColors
 
 /**
  * 视频网格单元：16:9 缩略图 + 时长角标 + 文件名 + 「分辨率 · 大小」。
@@ -43,6 +45,8 @@ import com.dsh.castkit.sender.ui.theme.ImmersiveColors
  *        项目的滚动性能本身是被专门优化过的（缩略图三级缓存 + 并发上限 2 +
  *        滚出屏幕中断抽帧）。播放器页的文件名会传 true——那里只有一个标题。
  *        如果你希望网格也滚，把 [VideoTile] 的调用点改成 true 即可。
+ * @param progressFraction 已播进度 0..1；**null = 没有记录，不画**这条。
+ *        画在缩略图正下方（很窄的橙色条，见 [PlaybackProgressBar]）。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -56,6 +60,7 @@ fun VideoTile(
     showMeta: Boolean = true,
     marqueeTitle: Boolean = false,
     aspectRatio: Float = 16f / 9f,
+    progressFraction: Float? = null,
 ) {
     val placeholder = CastKitTheme.colorScheme.surfaceContainerHighest
 
@@ -96,7 +101,15 @@ fun VideoTile(
             }
         }
 
-        Spacer(Modifier.height(CastKitSpacing.space2))
+        // 缩略图与标题之间原本是一条 8dp 的空白。有播放进度时把这条空白改成
+        // 「2dp + 进度条 3dp + 3dp」——总高一样，网格不会因为这个条子变得参差。
+        if (progressFraction != null) {
+            Spacer(Modifier.height(2.dp))
+            PlaybackProgressBar(progressFraction, Modifier.fillMaxWidth())
+            Spacer(Modifier.height(3.dp))
+        } else {
+            Spacer(Modifier.height(CastKitSpacing.space2))
+        }
 
         Text(
             text = title,
@@ -117,5 +130,31 @@ fun VideoTile(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+}
+
+/**
+ * 缩略图下方那条「看到哪了」的进度条：很窄（3dp），橙色已播 + 一层淡淡的轨道。
+ *
+ * 有轨道是为了让人一眼看出"这是一条进度条"而不是装饰线 —— 只画一截橙色短线的话，
+ * 看到 20% 的人会以为那是 UI 元素画歪了。轨道用 `onSurface` 低透明度，
+ * 深浅主题都自适应；橙色不跟着动态取色变，理由见 [LibraryColors]。
+ */
+@Composable
+private fun PlaybackProgressBar(fraction: Float, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(percent = 50)
+    Box(
+        modifier = modifier
+            .height(CastKitSizes.tileProgressHeight)
+            .clip(shape)
+            .background(CastKitTheme.colorScheme.onSurface.copy(alpha = 0.12f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(fraction.coerceIn(0f, 1f))
+                .fillMaxHeight()
+                .clip(shape)
+                .background(LibraryColors.PlaybackProgress),
+        )
     }
 }
