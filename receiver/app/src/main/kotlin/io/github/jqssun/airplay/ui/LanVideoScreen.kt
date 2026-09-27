@@ -174,8 +174,8 @@ fun LanVideoScreen(
     val position = scrubMs ?: state.positionMs
     val duration = state.durationMs
 
-    // 横滑一整屏宽对应多少时长：短片源就取片长本身，免得「蹭一下就跑完」
-    val seekWindowMs = duration.coerceAtMost(SEEK_WINDOW_MS)
+    // 横滑一整屏宽对应多少时长：片长的 1/3，夹在 [5s, 90s] 之间（见常量注释）
+    val seekWindowMs = (duration / 3).coerceIn(SEEK_WINDOW_MIN_MS, SEEK_WINDOW_MAX_MS)
 
     fun seekBy(deltaMs: Long) {
         val target = (position + deltaMs).coerceIn(0L, duration.coerceAtLeast(0L))
@@ -698,8 +698,12 @@ private const val SEEK_STEP_MS = 10_000L
 /**
  * 横滑调进度时，**一整屏宽**对应多少时长。
  *
- * 90 秒是个手感值：整屏滑一遍大约跨一分半，长片不用反复搓、短片又不会太跳。
- * 片源比它还短时取片长本身（见 `seekWindowMs`），免得「蹭一下就跑完」。
- * 与发送端同值，两端手感一致。
+ * 取**片长的三分之一**，上下夹在 [SEEK_WINDOW_MIN_MS, SEEK_WINDOW_MAX_MS]。与发送端同值，两端手感一致。
+ *
+ * 早先的规则是「片长与 90 秒取小」，而短片源时那等于「一屏宽 = 整部片子」——
+ * 实测 85 秒的片源在 14 秒处往左轻滑一下就直接掉到 0，看起来就像"每次都从 0 开始"。
  */
-private const val SEEK_WINDOW_MS = 90_000L
+private const val SEEK_WINDOW_MAX_MS = 90_000L
+
+/** 横滑窗口的下限：再短的片源也不至于蹭一下就跑完。 */
+private const val SEEK_WINDOW_MIN_MS = 5_000L

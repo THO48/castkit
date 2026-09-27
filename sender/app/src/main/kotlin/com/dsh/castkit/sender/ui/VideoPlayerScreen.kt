@@ -153,10 +153,17 @@ private const val SEEK_STEP_MS = 10_000L
 /**
  * 横滑调进度时，**一整屏宽**对应多少时长。
  *
- * 90 秒是个手感值：整屏滑一遍大约跨一分半，长片不用反复搓、短片又不会太跳。
- * 片源比它还短时取片长本身（见 `seekWindowMs`），免得「蹭一下就跑完」。
+ * 取**片长的三分之一**，上下夹在 [SEEK_WINDOW_MIN_MS, SEEK_WINDOW_MAX_MS]。
+ *
+ * 早先的规则是「片长与 90 秒取小」，而短片源时那等于「一屏宽 = 整部片子」——
+ * 实测 85 秒的片源在 14 秒处往左轻滑一下就直接掉到 0，看起来就像"每次都从 0 开始"。
+ * 现在一屏宽大约跨 1/3 片长（长片再被 90 秒夹住），滑起来是"在当前位置附近挪"，
+ * 而不是"一屏跨完整片"。
  */
-private const val SEEK_WINDOW_MS = 90_000L
+private const val SEEK_WINDOW_MAX_MS = 90_000L
+
+/** 横滑窗口的下限：再短的片源也不至于蹭一下就跑完。 */
+private const val SEEK_WINDOW_MIN_MS = 5_000L
 
 /**
  * 页面 3 —— 视频播放器（**覆盖层**，不是导航目的地）。
@@ -305,8 +312,8 @@ fun VideoPlayerScreen(
     val playing = if (remote) castState.remotePlaying else state.playing
     val buffering = if (remote) castState.remoteBuffering else state.buffering
 
-    // 横滑一整屏宽对应多少时长：短片源就取片长本身，免得「蹭一下就跑完」
-    val seekWindowMs = duration.coerceAtMost(SEEK_WINDOW_MS)
+    // 横滑一整屏宽对应多少时长：片长的 1/3，夹在 [5s, 90s] 之间（见常量注释）
+    val seekWindowMs = (duration / 3).coerceIn(SEEK_WINDOW_MIN_MS, SEEK_WINDOW_MAX_MS)
     // 投送中不做遥控（见 seekToLive 注释），时长为 0 时也没得跳
     val seekGestureEnabled = duration > 0L && !remote
 

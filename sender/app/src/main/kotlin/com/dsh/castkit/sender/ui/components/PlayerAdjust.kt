@@ -30,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -90,6 +91,19 @@ fun PlayerAdjustLayer(
     modifier: Modifier = Modifier,
     seekEnabled: Boolean = true,
 ) {
+    // 回调一律过一层 rememberUpdatedState 再交给 pointerInput。
+    //
+    // 必要性：`pointerInput` 的 block 只在 key 变化时才会重新挂载，它捕获的是**当时那一版**
+    // 回调闭包。调用方传进来的 lambda 每次重组都是新的，而且可能闭包了普通 val（比如播放页里的
+    // `position`）—— 一旦被固定成旧的那一版，滑动就会从"进入播放页那一刻的位置"算起（通常是 0），
+    // 而不是"按下那一刻的位置"。套一层 State 之后，block 里读到的永远是最近一次重组传进来的回调。
+    val currentOnAdjustStart by rememberUpdatedState(onAdjustStart)
+    val currentOnAdjustDelta by rememberUpdatedState(onAdjustDelta)
+    val currentOnAdjustEnd by rememberUpdatedState(onAdjustEnd)
+    val currentOnSeekStart by rememberUpdatedState(onSeekStart)
+    val currentOnSeekDelta by rememberUpdatedState(onSeekDelta)
+    val currentOnSeekEnd by rememberUpdatedState(onSeekEnd)
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -100,14 +114,14 @@ fun PlayerAdjustLayer(
                 detectHorizontalDragGestures(
                     onDragStart = {
                         accumulated = 0f
-                        onSeekStart()
+                        currentOnSeekStart()
                     },
-                    onDragEnd = { onSeekEnd() },
+                    onDragEnd = { currentOnSeekEnd() },
                     onHorizontalDrag = { change, dragAmount ->
                         change.consume()
                         accumulated += dragAmount
                         // 宽度**现取**：旋转屏幕后这一层会变宽变窄，协程启动时的快照会过期
-                        onSeekDelta(accumulated / size.width.toFloat().coerceAtLeast(1f))
+                        currentOnSeekDelta(accumulated / size.width.toFloat().coerceAtLeast(1f))
                     },
                 )
             }
@@ -121,12 +135,15 @@ fun PlayerAdjustLayer(
                         } else {
                             PlayerAdjustTarget.VOLUME
                         }
-                        onAdjustStart(target)
+                        currentOnAdjustStart(target)
                     },
-                    onDragEnd = { onAdjustEnd() },
+                    onDragEnd = { currentOnAdjustEnd() },
                     onVerticalDrag = { change, dragAmount ->
                         change.consume()
-                        onAdjustDelta(target, -dragAmount / size.height.toFloat().coerceAtLeast(1f))
+                        currentOnAdjustDelta(
+                            target,
+                            -dragAmount / size.height.toFloat().coerceAtLeast(1f),
+                        )
                     },
                 )
             },

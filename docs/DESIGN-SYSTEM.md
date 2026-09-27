@@ -574,8 +574,10 @@ Snackbar，连同 `snackbar_orientation` / `hint_orientation` 两条字符串一
   但只在超过 touch slop 之后才 consume，所以快速点击仍归父层、竖向拖动不会被误判成单击。
   控制栏是同一个 Box 里更靠后的兄弟节点，命中优先，所以在进度条上横向拖动不会被这层抢走。
 - **左右滑 = 调进度，边滑边跳**（每个指针事件就 seek 一次，不是松手才跳），画面中央显示
-  方向箭头 + 目标时间 + 偏移量。灵敏度：**一整屏宽 = 90 秒**（片源比 90 秒短时取片长本身，
-  免得"蹭一下就跑完"）；目标一律从**按下那一刻的位置**算起 —— 拿当前 `position` 累加会自激跑飞。
+  方向箭头 + 目标时间 + 偏移量。灵敏度：**一整屏宽 ≈ 片长的 1/3**，并夹在 [5 秒, 90 秒] 之间；
+  目标一律从**按下那一刻的位置**算起 —— 拿当前 `position` 累加会自激跑飞。
+  （早先的规则是「片长与 90 秒取小」，短片源时那等于**一屏宽 = 整部片子**：
+  85 秒的片源在 14 秒处往左轻滑一下就掉到 0，看起来像"每次都从 0 开始"。已改成 1/3 片长。）
   **投送中不生效**：那时本机只是一块遥控面板，没有画面可对着滑；要调接收端进度仍走底栏进度条
   与 ±10 秒按钮。横向与纵向是**同一个 Box 上串联的两个 `pointerInput`**，各自
   `await*TouchSlopOrCancellation`，谁先越过自己那根轴的 slop 谁 consume、另一个自动放弃 ——
@@ -583,6 +585,9 @@ Snackbar，连同 `snackbar_orientation` / `hint_orientation` 两条字符串一
   探测器用 `GestureDetectors.kt` 里那两个自定义实现而不是 foundation 自带的：自带的会在
   `onDragStart` **之前**先调一次 `on*Drag` 且把同一段 overSlop 算两遍，而这里的 `onDragStart`
   要负责定下"这次调亮度还是调音量"。
+  **六个回调都过一层 `rememberUpdatedState` 再交给 `pointerInput`**：block 只在 key 变化时重新挂载，
+  它捕获的是当时那一版闭包，而调用方传进来的 lambda 每次重组都是新的、还可能闭包了普通 `val`
+  （比如播放页的 `position`）—— 被固定成旧的就会"从进入播放页那一刻的位置算起"。
 - **两个都是系统级的，退出播放不还原**（原始需求里亮度本来是"仅播放页"，实测下来用户要的是系统级）。
   亮度优先走 `Settings.System.putInt(SCREEN_BRIGHTNESS)`（需要 `WRITE_SETTINGS` 特殊权限）；
   没权限时退回窗口级 `Window.screenBrightness` —— **实测小米 ROM 会把这个窗口值写进系统设置**，
