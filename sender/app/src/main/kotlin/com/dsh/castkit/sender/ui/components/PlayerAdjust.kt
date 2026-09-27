@@ -41,6 +41,7 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -53,6 +54,33 @@ import kotlin.math.roundToInt
 
 /** 竖滑能调的两样东西：左半屏亮度、右半屏音量。 */
 enum class PlayerAdjustTarget { BRIGHTNESS, VOLUME }
+
+/*
+ * 横滑调进度的「速度手感」：**快划跨得多，慢划跨得少**。
+ *
+ * 做法不是改映射本身，而是把滑过的位移按速度加个权：
+ * 同一段 300px，慢划按 1× 计入、快划最多按 [SEEK_SPEED_MAX_GAIN]× 计入，
+ * 于是慢划＝精确微调（和加这个功能之前完全一致），快划＝快速跨越。
+ *
+ * 三个阈值是**手感值**，想调就动这里：
+ * - [SEEK_SPEED_SLOW]：低于它完全不加速（正常"慢慢挪"的手速大约在 200~500 px/s）；
+ * - [SEEK_SPEED_FAST]：到它增益拉满（一次痛快的甩动大约 2500~5000 px/s）；
+ * - 中间线性过渡，所以不会出现"速度过一点点、幅度突然翻倍"。
+ *
+ * 速度用 Compose 的 `VelocityTracker` 取：它对最近一小段采样做最小二乘拟合，
+ * 既比"逐帧位移 ÷ 帧间隔"平滑得多，又比指数滑动平均响应快 —— EMA 试过，
+ * 短促的一甩只产生几个事件，权重还没爬上去手指就抬了。
+ */
+private const val SEEK_SPEED_SLOW = 600f
+private const val SEEK_SPEED_FAST = 3200f
+private const val SEEK_SPEED_MAX_GAIN = 4f
+
+/** 速度（px/s）→ 位移权重。慢于 [SEEK_SPEED_SLOW] 恒为 1×，快于 [SEEK_SPEED_FAST] 封顶。 */
+private fun seekSpeedGain(speedPxPerSec: Float): Float {
+    val t = ((speedPxPerSec - SEEK_SPEED_SLOW) / (SEEK_SPEED_FAST - SEEK_SPEED_SLOW))
+        .coerceIn(0f, 1f)
+    return 1f + t * (SEEK_SPEED_MAX_GAIN - 1f)
+}
 
 /**
  * 播放页的手势层：
@@ -109,17 +137,22 @@ fun PlayerAdjustLayer(
             .fillMaxSize()
             .pointerInput(seekEnabled) {
                 if (!seekEnabled) return@pointerInput
-                // 横滑报的是**从按下点起的累计位移**，所以这里自己攒
+                // 横滑报的是**从按下点起的累计位移**，所以这里自己攒。
+                // 攒的是**速度加权后**的等效位移：同样 300px，快划跨的时间明显更多。
                 var accumulated = 0f
+                val velocityTracker = VelocityTracker()
                 detectHorizontalDragGestures(
                     onDragStart = {
                         accumulated = 0f
+                        velocityTracker.resetTracking()
                         currentOnSeekStart()
                     },
                     onDragEnd = { currentOnSeekEnd() },
                     onHorizontalDrag = { change, dragAmount ->
                         change.consume()
-                        accumulated += dragAmount
+                        velocityTracker.addPosition(change.uptimeMillis, change.position)
+                        val speed = abs(velocityTracker.calculateVelocity().x)
+                        accumulated += dragAmount * seekSpeedGain(speed)
                         // 宽度**现取**：旋转屏幕后这一层会变宽变窄，协程启动时的快照会过期
                         currentOnSeekDelta(accumulated / size.width.toFloat().coerceAtLeast(1f))
                     },
