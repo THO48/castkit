@@ -289,24 +289,37 @@ private fun formatSeekTime(ms: Long): String {
 }
 
 /**
- * 屏幕亮度：**调的就是系统亮度**，退出播放不还原（和音量一样是全局的）。
+ * 屏幕亮度：有 `WRITE_SETTINGS` 时调的是**系统亮度**，否则退回**窗口亮度**，退出播放不还原。
  *
  * 两条路，优先走第一条：
- * 1. 有 `WRITE_SETTINGS`（特殊权限，要去设置页授权）→ 直接写 `Settings.System.SCREEN_BRIGHTNESS`。
- *    精确、跨 ROM 都生效；
- * 2. 没权限 → 退回窗口级 `Window.screenBrightness`。**实测小米 ROM 会把这个窗口值写进系统设置**，
- *    所以效果同样是"改系统亮度"；只有在窗口级语义严格生效的 ROM 上，才会退化成"仅播放页"。
+ * 1. 有 `WRITE_SETTINGS`（特殊权限，要去设置页授权）→ 直接写 `Settings.System.SCREEN_BRIGHTNESS`；
+ * 2. 没权限 → 退回窗口级 `Window.screenBrightness`。**小米手机实测会把这个窗口值写进系统设置**，
+ *    所以效果同样是"改系统亮度"；而在窗口级语义严格生效的设备（实测小米平板就是这样）上，
+ *    它是"仅本 App 生效"，退出后由系统接管。要给平板也做成系统级，
+ *    去 设置 → 应用 → 投屏接收端 里授予「修改系统设置」。
  *
- * 之前那套"退出播放还原系统亮度"的补偿逻辑（回写原值 + 隔 250ms 交还控制权 + 读回校正）
- * 全部删掉了 —— 需求改成"亮度也是系统级"之后，那些都成了多余动作，而且它们本身就是
- * "最低亮度退出后变成最低+1"那个问题的来源。
+ * [current] 必须与 [apply] 走同一条路（先看窗口覆盖），否则重复滑动会各自从不同基准起步。
  */
 object SystemBrightness {
 
     /** 当前系统亮度，0..1。 */
-    fun current(context: Context): Float = currentRaw(context) / 255f
+    /**
+     * 当前亮度，0..1。
+     *
+     * **先看窗口级覆盖，再退回系统设置** —— 这个顺序是关键：
+     * 没有 `WRITE_SETTINGS` 的机器上 [apply] 只写 `Window.screenBrightness`（窗口值），
+     * 系统设置里那条根本不会动。如果这里仍去读系统设置，下一轮滑动就会从"系统里那个旧值"
+     * 重新开始，用户看到的就是"明明刚调亮、再滑一次又从低处往上涨"。
+     * 本 App 的 AirPlay 播放器（`BrightnessState`）一直就是"有覆盖先用覆盖"的写法。
+     */
+    fun current(context: Context, activity: Activity?): Float {
+        val override = activity?.window?.attributes?.screenBrightness
+        // BRIGHTNESS_OVERRIDE_NONE 是 -1f，落在 0..1 之外，天然被排除
+        if (override != null && override in 0f..1f) return override
+        return currentRaw(context) / 255f
+    }
 
-    /** 当前系统亮度的原始档位（0..255）。 */
+    /** 系统设置里那条亮度的原始档位（0..255）。 */
     fun currentRaw(context: Context): Int = runCatching {
         Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS)
     }.getOrDefault(128).coerceIn(0, 255)

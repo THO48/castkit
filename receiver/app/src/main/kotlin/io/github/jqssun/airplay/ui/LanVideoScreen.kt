@@ -118,7 +118,7 @@ fun LanVideoScreen(
 
     // 竖滑调整：**两个都是系统级的**（亮度也是），退出播放不还原。
     var adjusting by remember { mutableStateOf<PlayerAdjustTarget?>(null) }
-    var brightness by remember { mutableStateOf(SystemBrightness.current(context)) }
+    var brightness by remember { mutableStateOf(SystemBrightness.current(context, activity)) }
     var volume by remember { mutableStateOf(SystemVolume.current(context)) }
 
     // 横滑调进度：`seekPreviewMs` 只是给中央提示看的**目标位置**，跳转本身在滑动过程中就实时做了。
@@ -257,7 +257,7 @@ fun LanVideoScreen(
                 adjusting = target
                 // 每次开始滑动都以当前实际值起步，避免上次滑到哪就永远从哪开始
                 when (target) {
-                    PlayerAdjustTarget.BRIGHTNESS -> brightness = SystemBrightness.current(context)
+                    PlayerAdjustTarget.BRIGHTNESS -> brightness = SystemBrightness.current(context, activity)
                     PlayerAdjustTarget.VOLUME -> volume = SystemVolume.current(context)
                 }
             },

@@ -602,6 +602,14 @@ Snackbar，连同 `snackbar_orientation` / `hint_orientation` 两条字符串一
   亮度优先走 `Settings.System.putInt(SCREEN_BRIGHTNESS)`（需要 `WRITE_SETTINGS` 特殊权限）；
   没权限时退回窗口级 `Window.screenBrightness` —— **实测小米 ROM 会把这个窗口值写进系统设置**，
   所以效果同样是"改系统亮度"，只有在窗口级语义严格生效的 ROM 上才会退化成"仅播放页"。
+  **读回必须和写入走同一条路**：`SystemBrightness.current(context, activity)` 先取
+  `window.attributes.screenBrightness`（`BRIGHTNESS_OVERRIDE_NONE` 是 `-1f`，天然落在 0..1 之外被排除），
+  取不到才退回系统设置。早期只读系统设置，而在没有 `WRITE_SETTINGS` 的机器上写入根本不动系统设置
+  （两个 App 的 manifest 都没声明这条权限，`canWrite()` 实测恒为 false，即都走窗口级），
+  于是下一次滑动又从那条第 0 档旧值起步 —— 也就是"明明刚调亮、再上滑一次还是从 0 开始涨"。
+  小米平板（M367FC，窗口级语义严格生效，最适合照出这个 bug）实测：同样 400px 的左侧上滑连做三次，
+  `dumpsys display` 的 `Display Brightness` 0.071 → 0.157 → 0.242 → 0.326，逐次累加；
+  反向连滑两次 0.326 → 0.232 → 0.138。手机（MIUI 会把窗口值透写进系统设置）读回取窗口值，与写入一致。
   这里刻意**不做**任何退出还原：早期版本为了"亮度仅本页"写过一套补偿（回写原值 + 隔 250ms
   交还控制权 + 读回校正），既复杂又会在最低档产生"退出后 +1"的跳变，需求改成系统级之后全部删除。
 - **音量**走 `AudioManager.setStreamVolume(STREAM_MUSIC)`。
