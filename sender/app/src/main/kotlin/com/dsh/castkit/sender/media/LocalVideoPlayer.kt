@@ -106,6 +106,20 @@ class LocalVideoPlayer(
         onLog(msg)
     }
 
+    /** 本次播放是否已经播到结尾（`STATE_ENDED` / libVLC `EndReached`）。 */
+    private var reachedEnd = false
+
+    /**
+     * 播放进度落盘的专用线程（懒建、守护线程）。
+     *
+     * 单线程是刻意的：写入要保序（后写的进度不能被先写的覆盖），而 `apply()` 本身也只排一次队。
+     */
+    private val saveExecutor by lazy {
+        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "castkit-save-progress").apply { isDaemon = true }
+        }
+    }
+
     /** 运行时解码器选择器（NextLib）。必须与 player 一对一，且在 prepare 之前 attach。 */
     private var decoderManager: DecoderManager? = null
 
@@ -189,6 +203,7 @@ class LocalVideoPlayer(
             firstFrameRendered = false
             fallbackStage = 0
             vlcTried = false
+            reachedEnd = false
             // 上次看到一半：这次接着播（记住的进度见 PlaybackProgress）
             val resumeFrom = PlaybackProgress.get(context, uri)
             _state.value = LocalPlaybackState(
@@ -247,6 +262,7 @@ class LocalVideoPlayer(
                             }
 
                             Player.STATE_ENDED -> {
+                                reachedEnd = true
                                 _state.value = _state.value.copy(
                                     playing = false,
                                     positionMs = _state.value.durationMs,
@@ -262,7 +278,11 @@ class LocalVideoPlayer(
 
                     override fun onIsPlayingChanged(isPlaying: Boolean) {
                         _state.value = _state.value.copy(playing = isPlaying, buffering = false)
-                        if (isPlaying) startTicker()
+                        if (isPlaying) {
+                            // 又放起来了（重播/拖回去接着看）：不再是"已看完"
+                            reachedEnd = false
+                            startTicker()
+                        }
                     }
 
                     override fun onRenderedFirstFrame() {
@@ -436,8 +456,9 @@ class LocalVideoPlayer(
     }
 
     private fun releaseInternal() {
-        // 退出播放页 / 换片源 / 出错收尾：先把进度记下来（记住的进度见 PlaybackProgress）
+        // 退出播放页 / 换片源 / 出错收尾：把进度记下来（saveProgress 内部丢后台线程，不占主线程）
         saveProgress()
+        val tReleased = System.currentTimeMillis()
         stopTicker()
         cancelWatchdog()
         cancelVlcWatchdog()
@@ -467,6 +488,11 @@ class LocalVideoPlayer(
 
         runCatching { vlcFd?.close() }
         vlcFd = null
+        // 释放是**同步跑在主线程**上的（ExoPlayer 要求同一 Looper），这段时间界面不响应，
+        // 用户感知就是"退出时卡一下"。帧统计看不到主线程阻塞，所以这里留一条耗时日志 ——
+        // 但只在真的卡了（>50ms）时打，平时不刷日志。
+        val cost = System.currentTimeMillis() - tReleased
+        if (cost > 50) log("释放偏慢：${cost}ms（存进度已丢后台）")
     }
 
     // ------------------------------------------------------------------
@@ -641,6 +667,7 @@ class LocalVideoPlayer(
 
             VlcMediaPlayer.Event.EndReached -> {
                 log("libVLC 播放结束")
+                reachedEnd = true
                 stopTicker()
                 cancelWatchdog()
                 cancelVlcWatchdog()
@@ -803,12 +830,23 @@ class LocalVideoPlayer(
         main.postDelayed(r, TICK_MS)
     }
 
-    /** 把当前进度写进"下次接着看"的记录（没有片源或还没起播时什么都不做）。 */
+    /**
+     * 把当前进度写进"下次接着看"的记录（没有片源或还没起播时什么都不做）。
+     *
+     * **落盘一律在后台线程**：这个方法会在主线程被调（ticker / 暂停 / 退出收尾），
+     * 而退出那条路上一毫秒都不该花在 I/O 上 —— 用户感知就是"退出时卡一下"。
+     */
     private fun saveProgress() {
         val s = _state.value
         val uri = s.uri ?: return
         if (s.positionMs <= 0) return
-        PlaybackProgress.save(context, uri, s.positionMs, s.durationMs)
+        // **真播完了就别再记**：否则下次打开会停在结尾、"接着播"等于直接结束。
+        // 判定用播放器自己的结束事件（reachedEnd），不拿"离片尾还有多远"去猜 ——
+        // 差 20 秒看完就退出，那个进度是要留着的。
+        if (reachedEnd) return
+        val pos = s.positionMs
+        val dur = s.durationMs
+        runCatching { saveExecutor.execute { PlaybackProgress.save(context, uri, pos, dur) } }
     }
 
     private fun stopTicker() {

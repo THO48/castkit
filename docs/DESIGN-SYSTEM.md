@@ -636,9 +636,12 @@ Snackbar，连同 `snackbar_orientation` / `hint_orientation` 两条字符串一
   写在 SharedPreferences 的一条字符串里（`uri\t位置ms` 换行分隔，最近写的排最前，最多 200 条），
   `apply()` 异步落盘；**键用 `Uri` 原文**（MediaStore 的 `content://media/.../1234` 是稳定的）。
   落盘时机：每 5 秒一次（ticker 里，与丢帧统计共用计数）、暂停、退出/换片源（`releaseInternal`）；
-  **看到结尾**（ExoPlayer `STATE_ENDED` / libVLC `EndReached`）则**清掉**记录，下次从头播。
-  「到结尾了」的阈值不是固定 30 秒：短片按片长的 1/4 收窄（`nearEndMs`），否则 20 秒的片子
-  永远记不住进度（后 30 秒全被算作"已看完"）。
+  **落盘一律在后台线程**（`saveExecutor` 单线程队列，保序）——退出那条路上主线程一毫秒都不该花在 I/O 上。
+  **只认"真播完"**：ExoPlayer `STATE_ENDED` / libVLC `EndReached` 时才 `clear`（外加"拖到最后 1 秒"这个
+  边界情形）。曾经这里是"离片尾 30 秒内一律清掉"，结果**差 20 秒看完就退出，进度整个丢了**
+  （用户实测报上来的）；"离结尾还有多远"猜不出用户是不是看完了。
+  `nearEndMs`（30 秒 / 短片按片长 1/4 收窄）现在**只**用于"投送结束时本机要不要自动接着播"，
+  不再参与"要不要记进度"。
   投送带过去的起始进度就是它 —— 所以"手机上看到 12 分钟再投屏"接收端也从 12 分钟开始。
 - 常驻提示语删除，改为 **Snackbar**（见下）。
 

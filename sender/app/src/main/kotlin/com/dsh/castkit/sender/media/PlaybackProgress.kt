@@ -33,6 +33,15 @@ object PlaybackProgress {
     private const val MIN_SAVE_MS = 5_000L
 
     /**
+     * 离片尾这么近就当作"已经到底了"（只在**拖到最后 1 秒**这种情形下命中）。
+     *
+     * 曾经这里是"离片尾 30 秒内一律清掉"，结果"差 20 秒看完就退出"的进度整个丢了
+     * （用户实测报上来的）。**看完**这件事该由播放器的 `STATE_ENDED` / libVLC `EndReached`
+     * 来判定（那边直接 `clear`），不该用"离结尾还有多远"去猜。
+     */
+    private const val END_EPSILON_MS = 1_000L
+
+    /**
      * 全量进度表（`Uri` 原文 → 位置 ms）。
      *
      * 文件列表要按格子画"缩略图下面那条进度条" —— 每格单独去读一次 SharedPreferences
@@ -53,8 +62,11 @@ object PlaybackProgress {
     }
 
     /**
-     * 「已经看完」的阈值：默认 30 秒，但短片要按片长收窄 ——
-     * 20 秒的片子总不能让后 30 秒都算"已看完"，那样它永远记不住进度。
+     * 「正好看完」的判定阈值：默认 30 秒，短片按片长 1/4 收窄（20 秒的片子不该把后 30 秒都算完）。
+     *
+     * 注意它**不再参与"要不要记进度"**（那是 [save] 里 1 秒的 [END_EPSILON_MS]），
+     * 只用于「投送结束时本机要不要自动接着播」：接收端已经放到结尾附近就别再起播了，
+     * 否则手机上会把最后几秒又放一遍。
      */
     fun nearEndMs(durationMs: Long): Long =
         if (durationMs > 0) NEAR_END_MS.coerceAtMost(durationMs / 4) else NEAR_END_MS
@@ -65,10 +77,10 @@ object PlaybackProgress {
         return _positions.value[uri.toString()] ?: 0L
     }
 
-    /** 记一次进度；贴到片尾时改为清掉。 */
+    /** 记一次进度；只把"拖到最后 1 秒"当作到底（真播完由播放器的 ENDED 清，见类注释）。 */
     fun save(context: Context, uri: Uri, positionMs: Long, durationMs: Long) {
         if (positionMs < MIN_SAVE_MS) return
-        if (durationMs > 0 && positionMs >= durationMs - nearEndMs(durationMs)) {
+        if (durationMs > 0 && positionMs >= durationMs - END_EPSILON_MS) {
             clear(context, uri)
             return
         }
