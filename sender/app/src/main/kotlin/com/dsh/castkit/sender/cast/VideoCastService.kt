@@ -19,6 +19,7 @@ import com.dsh.castkit.sender.R
 import com.dsh.castkit.sender.net.LanCast
 import com.dsh.castkit.sender.net.LanCastClient
 import com.dsh.castkit.sender.net.LanCastFileServer
+import java.util.concurrent.Executors
 
 /**
  * 「投视频文件」前台服务。
@@ -50,7 +51,18 @@ class VideoCastService : Service() {
     private var statusSeen = false
     private var lastStatusAt = 0L
 
+    /**
+     * 换集串行队列。
+     *
+     * 一是**顺序**：连点两次「下一个」必须按点击顺序下发，否则接收端可能停在上一集；
+     * 二是**别在主线程写 socket**：`onStartCommand` 在主线程，而 `sendFrame` 是直接 `Socket.write`
+     * （接收端那边就因此踩过 `NetworkOnMainThreadException`，这里不给它机会）。
+     */
+    private val switchWorker =
+        Executors.newSingleThreadExecutor { r -> Thread(r, "lancast-switch").apply { isDaemon = true } }
+
     override fun onBind(intent: Intent?): IBinder? = null
+
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -64,6 +76,13 @@ class VideoCastService : Service() {
                 val action = intent.getIntExtra(EXTRA_ACTION, 0)
                 val value = intent.getLongExtra(EXTRA_VALUE, 0L)
                 if (action != 0) client?.sendControl(action, value)
+            }
+            ACTION_SWITCH -> {
+                // 投送中换集：**不结束会话**，只在同一个会话里让接收端换片。
+                // 走单线程队列串行处理：连点两次「下一个」时，发送顺序必须和点击顺序一致。
+                val uri = intent.getStringExtra(EXTRA_URI)?.let { Uri.parse(it) }
+                if (uri == null) return START_NOT_STICKY
+                switchWorker.execute { switchServing(uri) }
             }
             ACTION_START -> {
                 startPositionMs = intent.getLongExtra(EXTRA_START_POSITION, 0L)
@@ -148,23 +167,86 @@ class VideoCastService : Service() {
         startPingLoop()
     }
 
+    /**
+     * 投送中换集：在**同一个会话**里让接收端改播另一个文件。
+     *
+     * 与 [startServing] 的区别是「什么都不重来」：不重建 HTTP 服务（只换它服务的那个文件）、
+     * 不重连控制通道、不动心跳、不改 `phase`。接收端收到第二帧 `type=6` 就会释放当前播放器、
+     * 播新地址（`LanVideoPlayer.play()` 内部先 `releaseInternal()`），会话本身一直活着。
+     *
+     * **`phase` 必须保持 RUNNING/CONNECTING**：播放页把「投视频 + RUNNING」当作"我在投送、
+     * 本机是遥控器"，一旦这里改成 CONNECTING，播放页的接管逻辑会判定"投送结束"，把本机
+     * seek 到当前位置并开始播放 —— 手机就会跟着出声（不是我们要的）。
+     */
+    private fun switchServing(uri: Uri) {
+        // 排队期间用户可能已经停了投送：这时**什么都不能做**，否则会把会话又开起来
+        if (stoppedByUser) return
+        val srv = server
+        if (srv == null || !srv.isRunning()) {
+            // 不在投送中（或文件服务已经收了）：退化成一次正常的开投
+            Log.i(TAG, "换集时没有在跑的投送，按新开投处理")
+            startPositionMs = 0L
+            startAsForeground(getString(R.string.video_preparing))
+            startServing(uri)
+            return
+        }
+        // 与开投一致：**不做播放前预检**，能力判断交给接收端（它解不了会给出具体原因）
+        val src = LanCastFileServer.describe(this, uri)
+        val playUrl = srv.switchSource(src)
+        if (playUrl == null) {
+            Log.w(TAG, "换集失败：拿不到新的播放地址，继续投送原文件")
+            return
+        }
+        source = src
+        url = playUrl
+        startPositionMs = 0L
+        // 换集那一瞬间接收端还没回报，刷新时间戳，免得 8 秒"接收端已停止"判定误伤
+        if (statusSeen) lastStatusAt = System.currentTimeMillis()
+        CastBus.update {
+            it.copy(
+                message = src.name,
+                remotePositionMs = 0,
+                remoteDurationMs = 0,
+                remotePlaying = false,
+                remoteBuffering = true,
+            )
+        }
+        updateNotification(getString(R.string.video_playing, src.name))
+        val c = client
+        if (c == null || !c.isConnected()) {
+            // 控制通道断着：不在这里重连。重连成功后 CTRL_READY 会按**当前 url** 重新下发地址
+            Log.i(TAG, "换集时控制通道未连接，等重连后下发新地址：$playUrl")
+            return
+        }
+        runCatching {
+            val payload = playUrl.toByteArray(Charsets.UTF_8)
+            c.sendFrame(LanCast.TYPE_PLAY_URL, 0, 0L, payload, 0, payload.size)
+        }.onFailure { Log.w(TAG, "换集下发播放地址失败", it) }
+        Log.i(TAG, "已换集：${src.name}（$playUrl）")
+    }
+
     private fun connect() {
-        val target = url ?: return
+        if (url == null) return
         val c = LanCastClient(host, port)
         c.onControl = { control ->
             when (control) {
                 LanCast.CTRL_READY -> {
                     connectAttempt = 0
-                    CastBus.update { it.copy(phase = CastPhase.RUNNING, message = source?.name ?: "") }
-                    runCatching {
-                        val payload = target.toByteArray(Charsets.UTF_8)
-                        c.sendFrame(LanCast.TYPE_PLAY_URL, 0, 0L, payload, 0, payload.size)
-                        // 带上本机进度：接收端就绪后会直接跳到这个位置接着播
-                        if (startPositionMs > 0) {
-                            c.sendControl(LanCast.ACTION_SEEK, startPositionMs)
-                        }
-                    }.onFailure { Log.w(TAG, "下发播放地址失败", it) }
-                    updateNotification(getString(R.string.video_playing, source?.name ?: ""))
+                    // **读当前的 url，不用 connect 时捕获的值**：投送中换过集的话，
+                    // 这里必须是新地址（否则重连会把接收端拉回上一集）。
+                    val target = url
+                    if (target != null) {
+                        CastBus.update { it.copy(phase = CastPhase.RUNNING, message = source?.name ?: "") }
+                        runCatching {
+                            val payload = target.toByteArray(Charsets.UTF_8)
+                            c.sendFrame(LanCast.TYPE_PLAY_URL, 0, 0L, payload, 0, payload.size)
+                            // 带上本机进度：接收端就绪后会直接跳到这个位置接着播
+                            if (startPositionMs > 0) {
+                                c.sendControl(LanCast.ACTION_SEEK, startPositionMs)
+                            }
+                        }.onFailure { Log.w(TAG, "下发播放地址失败", it) }
+                        updateNotification(getString(R.string.video_playing, source?.name ?: ""))
+                    }
                 }
                 LanCast.CTRL_REQUEST_KEYFRAME -> Unit
             }
@@ -339,6 +421,7 @@ class VideoCastService : Service() {
         const val ACTION_START = "com.dsh.castkit.sender.START_VIDEO"
         const val ACTION_STOP = "com.dsh.castkit.sender.STOP_VIDEO"
         const val ACTION_CTRL = "com.dsh.castkit.sender.CTRL_VIDEO"
+        const val ACTION_SWITCH = "com.dsh.castkit.sender.SWITCH_VIDEO"
         const val EXTRA_URI = "videoUri"
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
@@ -377,6 +460,17 @@ class VideoCastService : Service() {
             context.startService(
                 Intent(context, VideoCastService::class.java).setAction(ACTION_STOP),
             )
+        }
+
+        /**
+         * 投送中换集：把正在投的那个文件换成另一个，**会话不重来**（接收端在同一个会话里改播新地址）。
+         * 没有在投送时会退化成一次正常的开投。
+         */
+        fun switchTo(context: Context, uri: Uri) {
+            val intent = Intent(context, VideoCastService::class.java)
+                .setAction(ACTION_SWITCH)
+                .putExtra(EXTRA_URI, uri.toString())
+            runCatching { context.startService(intent) }
         }
 
         /** 投屏遥控（播放页调用）：action 见 LanCast.ACTION_*。 */

@@ -26,7 +26,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     val state: StateFlow<LocalPlaybackState> = player.state
 
-    fun play(uri: Uri, title: String) = player.play(uri, title)
+    /** [autoPlay]=false 用于投送中换集：只换片源、不起播（手机这时是遥控器）。 */
+    fun play(uri: Uri, title: String, autoPlay: Boolean = true) = player.play(uri, title, autoPlay)
 
     fun setSurface(surface: Surface?) = player.setSurface(surface)
 

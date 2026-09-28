@@ -93,6 +93,7 @@ import com.dsh.castkit.sender.R
 import com.dsh.castkit.sender.cast.CastBus
 import com.dsh.castkit.sender.cast.CastMode
 import com.dsh.castkit.sender.cast.CastPhase
+import com.dsh.castkit.sender.cast.isVideoCasting
 import com.dsh.castkit.sender.media.PlaybackProgress
 import com.dsh.castkit.sender.net.LanCastDiscovery
 import com.dsh.castkit.sender.ui.components.CastKitTopBar
@@ -284,11 +285,15 @@ fun VideoPlayerScreen(
         }
     }
 
-    val casting = castState.mode == CastMode.VIDEO &&
-        (castState.phase == CastPhase.RUNNING || castState.phase == CastPhase.CONNECTING)
+    val casting = castState.isVideoCasting
     val remote = casting
 
-    LaunchedEffect(uri) { vm.play(uri, title) }
+    LaunchedEffect(uri) {
+        // 投送中换集（点「上一个/下一个」）：本机**只换片源不起播** —— 画面和声音都在接收端，
+        // 手机这时是遥控器。判定用 CastBus 现值而不是组合期捕获的 `remote`，语义与
+        // `CastBus.state.value.isVideoCasting` 一致（换集全程 phase 保持不变）。
+        vm.play(uri, title, autoPlay = !CastBus.state.value.isVideoCasting)
+    }
 
     // 进播放页时把上次手动切过的方向贴回来；没切过就什么都不做（跟随系统）。
     // 用 LaunchedEffect 而不是塞进下面 DisposableEffect 的 body：后者是在组合期跑副作用，

@@ -211,7 +211,17 @@ class LocalVideoPlayer(
         }
     }
 
-    fun play(uri: Uri, title: String) {
+    /**
+     * 加载片源并（默认）起播。
+     *
+     * [autoPlay] = false 用于**投送中换集**：手机这时是遥控器，画面在接收端，本机只换片源、
+     * 不出声也不占扬声器；等投送结束再由接管逻辑 seek 到接收端的位置接着播。
+     * 这里刻意**不改用"play 完再 pause"**：`pause()` 有 `if (p.isPlaying)` 守卫，而刚 `play()`
+     * 的播放器通常还在缓冲（`isPlaying=false`），那一记 pause 会直接落空、片子照样播起来。
+     * 同理 [autoPlay] = false 时也不读 [PlaybackProgress] —— 否则会弹一句"已从上次的 xx:xx 继续播放"，
+     * 而实际上接收端是从头播的，属于误导。
+     */
+    fun play(uri: Uri, title: String, autoPlay: Boolean = true) {
         handler.post {
             releaseInternal()
             firstFrameRendered = false
@@ -219,14 +229,20 @@ class LocalVideoPlayer(
             vlcTried = false
             reachedEnd = false
             // 上次看到一半：这次接着播（记住的进度见 PlaybackProgress）
-            val resumeFrom = PlaybackProgress.get(context, uri)
+            val resumeFrom = if (autoPlay) PlaybackProgress.get(context, uri) else 0L
             _state.value = LocalPlaybackState(
                 uri = uri,
                 title = title,
                 buffering = true,
                 resumedFromMs = resumeFrom,
             )
-            log(if (resumeFrom > 0) "本地播放: $uri（从 ${resumeFrom}ms 继续）" else "本地播放: $uri")
+            log(
+                when {
+                    !autoPlay -> "本地加载（只加载不播放，投送中换集）: $uri"
+                    resumeFrom > 0 -> "本地播放: $uri（从 ${resumeFrom}ms 继续）"
+                    else -> "本地播放: $uri"
+                },
+            )
 
             val manager = DecoderManager()
             decoderManager = manager
@@ -276,8 +292,11 @@ class LocalVideoPlayer(
                                         ?.coerceAtLeast(0) ?: 0L,
                                 )
                                 startTicker()
-                                // 就绪了才谈得上「有没有画面」，看门狗从这时开始计时
-                                scheduleWatchdog(NO_FRAME_FALLBACK_MS)
+                                // 就绪了才谈得上「有没有画面」，看门狗从这时开始计时。
+                                // 投送中换集（autoPlay=false）时**不给本机看门狗**：本机没在播，
+                                // 一旦硬解不出帧就会误判成"这个片源接收端放不了"并弹错；
+                                // 等真正接管播放时（resume）再补上。
+                                if (autoPlay) scheduleWatchdog(NO_FRAME_FALLBACK_MS)
                             }
 
                             Player.STATE_ENDED -> {
@@ -369,7 +388,11 @@ class LocalVideoPlayer(
                     runCatching { p.seekTo(resumeFrom) }
                     _state.value = _state.value.copy(positionMs = resumeFrom)
                 }
-                p.playWhenReady = true
+                if (autoPlay) {
+                    p.playWhenReady = true
+                } else {
+                    _state.value = _state.value.copy(playing = false, buffering = false)
+                }
             } catch (e: Throwable) {
                 log("本地播放加载失败: ${e.message}")
                 _state.value = _state.value.copy(error = e.message ?: "加载失败", buffering = false)
@@ -405,6 +428,8 @@ class LocalVideoPlayer(
      */
     fun resume() {
         handler.post {
+            // 投送中换集那一次是"只加载不播放"，当时没起看门狗；现在真播了，把这一课补上
+            if (!firstFrameRendered) scheduleWatchdog(NO_FRAME_FALLBACK_MS)
             val vlc = vlcPlayer
             if (vlc != null) {
                 runCatching { vlc.play() }

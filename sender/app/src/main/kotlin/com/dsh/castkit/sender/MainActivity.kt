@@ -81,6 +81,8 @@ class MainActivity : ComponentActivity() {
                         Prefs.setTarget(this, host, port, auto = true)
                         VideoCastService.start(this, uri, host, port, positionMs)
                     },
+                    // 投送中点「上一个/下一个」：换片但**不结束投送**，接收端在同一会话里改播新片
+                    onSwitchVideo = { uri -> VideoCastService.switchTo(this, uri) },
                     onRemoteToggle = { VideoCastService.control(this, LanCast.ACTION_TOGGLE) },
                     onRemoteSeek = { ms -> VideoCastService.control(this, LanCast.ACTION_SEEK, ms) },
                     onStopVideo = { VideoCastService.stop(this) },

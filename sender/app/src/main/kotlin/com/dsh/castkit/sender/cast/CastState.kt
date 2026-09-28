@@ -45,3 +45,13 @@ object CastBus {
         _state.value = CastState()
     }
 }
+
+/**
+ * 是否正在「投视频文件」（投送态）。
+ *
+ * 播放页据此把自己切成遥控器：进度/时长/播放状态全部取接收端的回报，本机不起播。
+ * 之所以做成共享判定而不是各处抄一遍：投送中**换集**时 `phase` 必须一直保持 RUNNING/CONNECTING，
+ * 谁把这个条件写歪了，播放页就会把"换了一集"误判成"投送结束"、把本机接管起来。
+ */
+val CastState.isVideoCasting: Boolean
+    get() = mode == CastMode.VIDEO && (phase == CastPhase.RUNNING || phase == CastPhase.CONNECTING)

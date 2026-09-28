@@ -32,8 +32,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.dsh.castkit.sender.CastConfig
 import com.dsh.castkit.sender.R
 import com.dsh.castkit.sender.cast.CastBus
-import com.dsh.castkit.sender.cast.CastMode
-import com.dsh.castkit.sender.cast.CastPhase
+import com.dsh.castkit.sender.cast.isVideoCasting
+import com.dsh.castkit.sender.media.PlaybackProgress
 import com.dsh.castkit.sender.net.LanCastDiscovery
 import com.dsh.castkit.sender.net.LanCastFileServer
 
@@ -72,6 +72,8 @@ fun MainScreen(
     onPickVideo: () -> Unit,
     onPickVideoUri: (Uri) -> Unit,
     onQuickCast: (Uri, String, Int, Long) -> Unit,
+    /** 投送中换集：把正在投的文件换成另一个，**不结束投送**（接收端在同一会话里换片）。 */
+    onSwitchVideo: (Uri) -> Unit,
     onRemoteToggle: () -> Unit,
     onRemoteSeek: (Long) -> Unit,
     onStopVideo: () -> Unit,
@@ -101,11 +103,7 @@ fun MainScreen(
     val playerVm: PlayerViewModel = viewModel()
 
     // 不订阅 CastBus（避免每秒码率变化触发整棵重建），按需读一次即可
-    val isVideoCasting: () -> Boolean = {
-        val st = CastBus.state.value
-        st.mode == CastMode.VIDEO &&
-            (st.phase == CastPhase.RUNNING || st.phase == CastPhase.CONNECTING)
-    }
+    val isVideoCasting: () -> Boolean = { CastBus.state.value.isVideoCasting }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
@@ -185,9 +183,22 @@ fun MainScreen(
             val index = playlist.indexOf(playingUri)
             val hasPrev = index > 0
             val hasNext = index >= 0 && index < playlist.size - 1
-            /** 切集：先收掉当前投送，再换片源 —— 否则接收端还在放上一个文件。 */
+            /**
+             * 切集：投送中**不结束投送**，只让接收端在同一个会话里换片、从 00:00 接着播；
+             * 没在投送时就是普通的本机换片。
+             *
+             * 顺带把被跳过那一集的进度按**接收端**的位置记下来（本机进度停在开投那一刻，
+             * 不记的话"跳到下一集"就等于把这集看到哪忘了）。`save` 自己会把 < 5 秒与贴片尾的
+             * 情形按既有规则过掉。
+             */
             fun switchTo(target: Uri) {
-                if (isVideoCasting()) onStopVideo()
+                val cast = CastBus.state.value
+                if (cast.isVideoCasting) {
+                    if (cast.remotePositionMs > 0) {
+                        PlaybackProgress.save(context, playingUri, cast.remotePositionMs, cast.remoteDurationMs)
+                    }
+                    onSwitchVideo(target)
+                }
                 playing = target
             }
             VideoPlayerScreen(

@@ -81,6 +81,23 @@ class LanCastFileServer(private val context: Context) {
         return url(ip, bound, src.name)
     }
 
+    /**
+     * 换片源但**不重启服务**：端口、监听线程、连接池都不动，接收端下一次 GET 拿到的就是新文件。
+     *
+     * 为什么不做「stop 再 start」：投送中换集（播放页点「上一个/下一个」）要尽量不惊动正在跑的
+     * 会话 —— 重绑端口会关掉监听套接字、让在途连接提前收尾。这里只换 [source] 一个字段：
+     * 已经在跑的 `serve()` 早把 `source` 读进了局部变量，会自然把旧文件送完/随对端断开结束。
+     *
+     * @return 新文件的可访问地址；服务没在跑或取不到本机 IP 时返回 null（调用方按"重新开投"处理）。
+     */
+    @Synchronized
+    fun switchSource(src: Source): String? {
+        if (!isRunning()) return null
+        source = src
+        val ip = localIpv4() ?: return null
+        return url(ip, port, src.name)
+    }
+
     @Synchronized
     fun stop() {
         running.set(false)
