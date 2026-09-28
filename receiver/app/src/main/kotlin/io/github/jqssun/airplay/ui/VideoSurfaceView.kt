@@ -29,6 +29,10 @@ fun VideoSurfaceView(
                 onSurfaceAvailable(holder.surface)
             }
             override fun surfaceChanged(holder: SurfaceHolder, fmt: Int, w: Int, h: Int) {
+                // surfaceChanged 可能**晚于** surfaceDestroyed 到达（SurfaceView 的销毁回调是
+                // 下一次 traversal 才发的），此时 holder.surface 已经是失效对象。上报它会让
+                // 解码器拿着死面去 nativeWindowConnect，直接 EINVAL 建不起来。
+                if (!holder.surface.isValid) return
                 onSurfaceHolder?.invoke(holder)
                 onSurfaceAvailable(holder.surface)
             }

@@ -1,7 +1,10 @@
 package io.github.jqssun.airplay.net
 
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.os.Build
 import android.util.Log
 import android.view.Surface
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -157,8 +160,31 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
      */
     fun setSurface(s: Surface?) {
         if (surface === s) return
+        // 失效的 Surface **绝不能收**：SurfaceView 销毁后 SurfaceHolder 还会把同一个对象再报一次
+        // （surfaceChanged 晚于 surfaceDestroyed），收下来就是一个"有对象、没 native 句柄"的
+        // 死面 —— MediaCodec.configure 会以 nativeWindowConnect EINVAL 失败，看门狗每 2 秒
+        // 重试一次、永远失败，用户看到的就是一直黑屏/花屏。
+        if (s != null && !s.isValid) {
+            log("忽略失效的渲染面: ${s.hashCode()} valid=false")
+            return
+        }
+        // 打印 hash + isValid：真机上出现过「Surface 对象在、native 句柄已断」的情况，
+        // 表现是 MediaCodec.configure 里 nativeWindowConnect 返回 EINVAL，只打"格式不支持"会误导。
+        log(
+            "渲染面变更: " + (s?.let { "${it.hashCode()} valid=${it.isValid}" } ?: "null") +
+                "（上一个 ${surface?.hashCode() ?: "null"}）",
+        )
         surface = s
         session?.onSurfaceChanged(s)
+    }
+
+    /** UI 回收渲染面：只有确实是当前在用的那一块才清，否则会把刚拿到的新面误清掉。 */
+    fun clearSurface(s: Surface) {
+        if (surface !== s) {
+            log("忽略回收非当前渲染面: ${s.hashCode()}")
+            return
+        }
+        setSurface(null)
     }
 
     fun stopSession(reason: String = "已被 AirPlay 会话占用") {
@@ -483,9 +509,8 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
                 val format = MediaFormat.createVideoFormat(MIME, fmtW.coerceAtLeast(16), fmtH.coerceAtLeast(16))
                 format.setByteBuffer("csd-0", ByteBuffer.wrap(sps))
                 format.setByteBuffer("csd-1", ByteBuffer.wrap(pps))
-                val c = MediaCodec.createDecoderByType(MIME)
-                c.configure(format, cur, null, 0)
-                c.start()
+                if (!cur.isValid) log("渲染面已失效（isValid=false），解码器多半建不起来")
+                val c = createDecoder(format, cur, fmtW, fmtH)
                 codec = c
                 codecW = fmtW
                 codecH = fmtH
@@ -506,9 +531,62 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
             }
         }
 
+        /**
+         * 建解码器：**先平台默认，再逐个试其他能覆盖该尺寸的解码器（硬解优先、软解兜底）**。
+         *
+         * 为什么要阶梯：`createDecoderByType` 只给第一个匹配的编解码器，它一旦在这个尺寸/这块
+         * 渲染面上配置失败（真机实测：`MediaCodec.configure` 里 nativeWindowConnect 返回 EINVAL，
+         * 抛的是 message 为空的 IllegalArgumentException），进程里就再没有第二次机会 ——
+         * 看门狗每 2 秒重试一次，永远撞同一堵墙，用户看到的就是一直黑屏/花屏。
+         */
+        private fun createDecoder(format: MediaFormat, surface: Surface, w: Int, h: Int): MediaCodec {
+            var last: Throwable? = null
+            for (name in decoderCandidates(w, h)) {
+                val c = try {
+                    if (name == null) MediaCodec.createDecoderByType(MIME) else MediaCodec.createByCodecName(name)
+                } catch (e: Throwable) {
+                    last = e
+                    log("解码器实例创建失败（${name ?: "平台默认"}）: ${e.javaClass.simpleName} ${e.message}")
+                    continue
+                }
+                try {
+                    c.configure(format, surface, null, 0)
+                    c.start()
+                    return c
+                } catch (e: Throwable) {
+                    last = e
+                    log("解码器配置失败（${c.name}）: ${e.javaClass.simpleName} ${e.message}")
+                    runCatching { c.release() }
+                }
+            }
+            throw last ?: IllegalStateException("本机没有可用的 H.264 解码器")
+        }
+
+        /** `null` = 平台默认；其余是具体解码器名。尺寸不支持的先滤掉，省得白试一轮。 */
+        private fun decoderCandidates(w: Int, h: Int): List<String?> {
+            val all = runCatching {
+                MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.filter { info ->
+                    !info.isEncoder && info.supportedTypes.any { it.equals(MIME, ignoreCase = true) }
+                }
+            }.getOrDefault(emptyList())
+            fun softwareOnly(info: MediaCodecInfo): Boolean =
+                if (Build.VERSION.SDK_INT >= 29) info.isSoftwareOnly
+                else info.name.startsWith("OMX.google.", true) || info.name.startsWith("c2.android.", true)
+            fun sizeOk(info: MediaCodecInfo): Boolean = runCatching {
+                val caps = info.getCapabilitiesForType(MIME).videoCapabilities
+                // 有些解码器只报横屏上限
+                caps.isSizeSupported(w, h) || (w < h && caps.isSizeSupported(h, w))
+            }.getOrDefault(true)
+            return buildList {
+                add(null)
+                all.sortedBy { if (softwareOnly(it)) 1 else 0 }
+                    .filter { sizeOk(it) }
+                    .forEach { add(it.name) }
+            }
+        }
+
         private fun feedFrame(data: ByteArray, len: Int, ptsUs: Long, keyframe: Boolean) =
             synchronized(outputLock) { feedFrameLocked(data, len, ptsUs, keyframe) }
-
         private fun feedFrameLocked(data: ByteArray, len: Int, ptsUs: Long, keyframe: Boolean) {
             val c = codec ?: run {
                 // 还没准备好解码器（例如 Surface 未就绪）：丢弃，等 CSD/关键帧

@@ -609,7 +609,9 @@ class AirPlayService : LifecycleService(), RaopCallbackHandler, LogListener {
 
     fun clearVideoSurface(surface: Surface) {
         videoRenderer.clearSurface(surface)
-        lanCast.setSurface(null)
+        // 只回收"当前在用的那一块"：这个方法会被不同渲染面的销毁回调调用，
+        // 无条件清空会把刚建立的新面一起清掉（真机上表现为投屏永远黑屏）。
+        lanCast.clearSurface(surface)
     }
 
     /** CastKit: 「投视频文件」的渲染面（与镜像面分开，同一时刻只会有一个在显示）。 */
