@@ -83,8 +83,8 @@ android {
         applicationId = "com.dsh.castkit.receiver"
         minSdk = 24
         targetSdk = 36
-        versionCode = 32
-        versionName = "0.0.32-castkit.2"
+        versionCode = 33
+        versionName = "2.0.0"
 
         if (!usePrebuiltNative) {
             externalNativeBuild {
