@@ -79,6 +79,17 @@ class ScreenEncoder(
         }
     }
 
+    /** 投屏中途动态调整编码码率，无需重启会话。 */
+    fun updateBitrate(bitrateBps: Int) {
+        try {
+            codec?.setParameters(Bundle().apply {
+                putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitrateBps.coerceIn(500_000, 50_000_000))
+            })
+        } catch (e: Throwable) {
+            Log.w(TAG, "updateBitrate failed", e)
+        }
+    }
+
     fun stop() {
         running = false
         thread?.interrupt()

@@ -22,11 +22,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import dagger.hilt.android.AndroidEntryPoint
 import io.github.jqssun.airplay.service.AirPlayService
 import io.github.jqssun.airplay.ui.MainScreen
 import io.github.jqssun.airplay.ui.theme.AirPlayTheme
 import io.github.jqssun.airplay.viewmodel.MainViewModel
-import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
@@ -81,10 +81,16 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // 修复：LANCast 镜像和投视频期间也保持亮屏
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                combine(viewModel.keepScreenOn, viewModel.connectionCount) { keep, conns ->
-                    keep && conns > 0
+                combine(
+                    viewModel.keepScreenOn,
+                    viewModel.connectionCount,
+                    viewModel.lanStatus,
+                    viewModel.lanVideo,
+                ) { keep, conns, lan, lanVid ->
+                    keep && (conns > 0 || lan.client != null || lanVid.active)
                 }.collect { on ->
                     if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -92,14 +98,16 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // auto-enter pre-declared in pip params
+        // auto-enter pre-declared in pip params (支持 AirPlay + LANCast + 投视频)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             lifecycleScope.launch {
                 repeatOnLifecycle(Lifecycle.State.STARTED) {
                     combine(
-                        viewModel.serverState, viewModel.connectionCount,
-                        viewModel.videoPlaybackActive, viewModel.videoPlaybackAspect,
-                        viewModel.videoAspect
+                        viewModel.serverState,
+                        viewModel.connectionCount,
+                        viewModel.videoPlaybackActive,
+                        viewModel.lanStatus,
+                        viewModel.lanVideo,
                     ) { _, _, _, _, _ -> }.collect { setPictureInPictureParams(_pipParams()) }
                 }
             }
@@ -124,9 +132,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun _pipParams(): PictureInPictureParams {
-        val aspect = if (viewModel.videoPlaybackActive.value) viewModel.videoPlaybackAspect.value
-            else viewModel.videoAspect.value
-        val rational = Rational((aspect * 1000).toInt().coerceIn(1, 2390), 1000)
+        val lanVid = viewModel.lanVideo.value
+        val lanSt = viewModel.lanStatus.value
+        val aspect = when {
+            lanVid.active && lanVid.aspect > 0f -> lanVid.aspect
+            viewModel.videoPlaybackActive.value -> viewModel.videoPlaybackAspect.value
+            lanSt.client != null && lanSt.aspect > 0f -> lanSt.aspect
+            else -> viewModel.videoAspect.value
+        }
+        // Android PiP ratio must stay within [1/2.39, 2.39]
+        val clamped = aspect.coerceIn(0.42f, 2.38f)
+        val rational = Rational((clamped * 1000).toInt().coerceIn(420, 2380), 1000)
         val builder = PictureInPictureParams.Builder().setAspectRatio(rational)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setAutoEnterEnabled(_shouldAutoPip())
@@ -135,8 +151,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun _shouldAutoPip(): Boolean =
-        viewModel.serverState.value == AirPlayService.ServerState.RUNNING &&
-            viewModel.connectionCount.value > 0
+        viewModel.lanVideo.value.active ||
+            (viewModel.lanStatus.value.client != null && viewModel.lanStatus.value.width > 0) ||
+            (viewModel.serverState.value == AirPlayService.ServerState.RUNNING && viewModel.connectionCount.value > 0)
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
@@ -150,10 +167,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // never stop mid-session
+        // never stop mid-session (AirPlay 或 LANCast 或投视频或远程视频库进行中均不停止)
+        val hasActiveSession = viewModel.connectionCount.value > 0 ||
+            viewModel.lanStatus.value.client != null ||
+            viewModel.lanVideo.value.active ||
+            viewModel.remoteLibrary.value.connected
         if (!viewModel.runInBackground.value && !isChangingConfigurations &&
             viewModel.serverState.value == AirPlayService.ServerState.RUNNING &&
-            viewModel.connectionCount.value == 0) {
+            !hasActiveSession) {
             viewModel.stopServer()
         }
     }

@@ -14,23 +14,35 @@ data class CastState(
     val message: String = "",
     val host: String = "",
     val port: Int = 0,
+    val targetName: String = "",
     val width: Int = 0,
     val height: Int = 0,
     val fps: Int = 0,
     val bitrateBps: Int = 0,
     val measuredKbps: Int = 0,
     val measuredFps: Float = 0f,
+    /** 当前镜像会话是否开启了音频同步。 */
+    val audioActive: Boolean = false,
+    /** 本次会话开始运行的时间戳（用于计时显示）。 */
+    val startedAtMs: Long = 0L,
     /**
      * 应用内本地播放器是否全屏播放中。播放器里的「本机旋转」只改手机自己的方向，
      * 镜像投屏必须据此**停止跟随**本机旋转，否则会把接收端画面一起转过去。
      */
     val localPlayerActive: Boolean = false,
-    // ---- 投视频文件时接收端回报的播放状态（发送端进度条据此同步）----
+    // ---- 投视频文件时当前投送的媒体信息与接收端回报的播放状态 ----
+    val videoUri: String = "",
+    val videoTitle: String = "",
     val remotePositionMs: Long = 0,
     val remoteDurationMs: Long = 0,
     val remotePlaying: Boolean = false,
     val remoteBuffering: Boolean = false,
-)
+    val remoteBrowsing: Boolean = false,
+    val remoteSpeed: Float = 1f,
+) {
+    val isActive: Boolean
+        get() = phase == CastPhase.RUNNING || phase == CastPhase.CONNECTING || phase == CastPhase.RECONNECTING
+}
 
 /** 进程内单例状态，Service 写、Activity 读（避免 Binder 样板代码）。 */
 object CastBus {
@@ -45,13 +57,3 @@ object CastBus {
         _state.value = CastState()
     }
 }
-
-/**
- * 是否正在「投视频文件」（投送态）。
- *
- * 播放页据此把自己切成遥控器：进度/时长/播放状态全部取接收端的回报，本机不起播。
- * 之所以做成共享判定而不是各处抄一遍：投送中**换集**时 `phase` 必须一直保持 RUNNING/CONNECTING，
- * 谁把这个条件写歪了，播放页就会把"换了一集"误判成"投送结束"、把本机接管起来。
- */
-val CastState.isVideoCasting: Boolean
-    get() = mode == CastMode.VIDEO && (phase == CastPhase.RUNNING || phase == CastPhase.CONNECTING)

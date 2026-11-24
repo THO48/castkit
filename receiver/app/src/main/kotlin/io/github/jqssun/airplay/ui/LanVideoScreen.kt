@@ -1,264 +1,332 @@
 package io.github.jqssun.airplay.ui
 
 import android.app.Activity
+import android.content.Context
+import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.media.AudioManager
 import android.view.Surface
-import android.view.SurfaceHolder
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Forward10
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.AspectRatio
+import androidx.compose.material.icons.rounded.Brightness6
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DriveFileMove
+import androidx.compose.material.icons.rounded.FastForward
+import androidx.compose.material.icons.rounded.FastRewind
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Forward10
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Replay10
+import androidx.compose.material.icons.rounded.ScreenRotation
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChanged
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
-import io.github.jqssun.airplay.R
+import io.github.jqssun.airplay.net.RemoteLibraryState
+import io.github.jqssun.airplay.net.RemoteThumbCache
+import io.github.jqssun.airplay.net.RemoteVideoItem
+import io.github.jqssun.airplay.net.RemoteVideoLibrary
 import io.github.jqssun.airplay.renderer.LanVideoState
-import io.github.jqssun.airplay.ui.theme.ImmersiveColors
-import io.github.jqssun.airplay.ui.theme.PillShape
-import io.github.jqssun.airplay.ui.theme.PlayerMotion
-import io.github.jqssun.airplay.ui.theme.PlayerSizes
-import io.github.jqssun.airplay.ui.theme.PlayerSpacing
-import io.github.jqssun.airplay.ui.theme.PlayerType
-import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlin.math.abs
+
+private enum class LanGestureKind { NONE, SEEK, VOLUME, BRIGHTNESS }
+
+private val LAN_SPEED_OPTIONS = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
 
 /**
- * CastKit: 局域网「投视频文件」播放页。
- *
- * 发送端只给出视频地址，这里用系统播放器播放原始文件，所以画质/声音/进度都是原生的。
- *
- * **视觉与交互刻意与发送端 `VideoPlayerScreen` 保持同一套**（见 [io.github.jqssun.airplay.ui.theme.Immersion]）：
- * 顶栏与底栏全透明、白字白图标带投影、自绘 3dp/12dp 进度条、3 秒自动收起、
- * 系统栏跟着控制栏显隐、矮屏自动换紧凑档。
- *
- * 与发送端的差异是因为**能力不同**，不是样式偷懒：
- *  - 没有「上一个 / 下一个」——接收端只会收到发送端推来的单个地址，没有播放列表；
- *  - 没有「投屏」钮——它自己就是接收端的这一端；
- *  - 没有「切方向」钮——发送端那个钮是为了修发送端自己的画面，接收端这一页从来没有方向控制；
- *  - 没有长按 3× 快进——[io.github.jqssun.airplay.renderer.LanVideoPlayer] 没有倍速接口。
- *  退出改由顶栏返回箭头承担（发送端也是这样：每个动作全页只出现一次），系统返回键同样生效。
+ * 升级版 CastKit 局域网「投视频文件」影院级播放页：
+ * - 支持画中画模式（PiP）
+ * - 手势控制：左划亮度、右划音量、横划拖进度、左右双击 ±10s、中双击暂停/播放
+ * - 支持倍速调节（与发送端遥控同步）、画面比例切换（适应 / 铺满）、控件锁、屏幕旋转
  */
 @Composable
 fun LanVideoScreen(
     state: LanVideoState,
+    remoteLibrary: RemoteLibraryState,
+    isInPip: Boolean,
     onSurfaceAvailable: (Surface) -> Unit,
     onSurfaceDestroyed: (Surface) -> Unit,
-    onSurfaceHolder: (SurfaceHolder) -> Unit = {},
     onToggle: () -> Unit,
     onSeek: (Long) -> Unit,
+    onSeekBy: (Long) -> Unit,
+    onSpeedChange: (Float) -> Unit,
+    onSelectRemoteVideo: (RemoteVideoItem) -> Unit,
+    onExitToLibrary: () -> Unit,
+    onPip: () -> Unit,
     onStop: () -> Unit,
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
     val configuration = LocalConfiguration.current
-    val compact = configuration.screenHeightDp < COMPACT_HEIGHT_THRESHOLD_DP
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     var overlayVisible by remember { mutableStateOf(true) }
+    var controlsLocked by remember { mutableStateOf(false) }
+    var fillScreen by remember { mutableStateOf(false) }
+    var showSpeedMenu by remember { mutableStateOf(false) }
+    var showLibraryDrawer by remember { mutableStateOf(false) }
     var scrubMs by remember { mutableStateOf<Long?>(null) }
+    val position = scrubMs ?: state.positionMs
 
-    // 竖滑调整：**两个都是系统级的**（亮度也是），退出播放不还原。
-    var adjusting by remember { mutableStateOf<PlayerAdjustTarget?>(null) }
-    var brightness by remember { mutableStateOf(SystemBrightness.current(context, activity)) }
-    var volume by remember { mutableStateOf(SystemVolume.current(context)) }
+    // 同目录上下集列表（根据发送端视频库自动推导）
+    val currentItem = remember(remoteLibrary.items, remoteLibrary.activeId) {
+        remoteLibrary.items.firstOrNull { it.id == remoteLibrary.activeId }
+    }
+    val siblingVideos = remember(remoteLibrary.items, currentItem) {
+        if (currentItem != null) {
+            RemoteVideoLibrary.videosIn(remoteLibrary.items, currentItem.folder)
+        } else {
+            remoteLibrary.items
+        }
+    }
+    val currentIdx = remember(siblingVideos, currentItem) {
+        if (currentItem == null) -1 else siblingVideos.indexOfFirst { it.id == currentItem.id }
+    }
+    val prevVideo = siblingVideos.getOrNull(currentIdx - 1)
+    val nextVideo = siblingVideos.getOrNull(currentIdx + 1)
 
-    // 横滑调进度：`seekPreviewMs` 只是给中央提示看的**目标位置**，跳转本身在滑动过程中就实时做了。
-    // `seekStartMs` 是按下那一刻的播放位置 —— 目标一律从它算起，**不能**累加当前位置，否则边跳边算会自激。
-    var seekPreviewMs by remember { mutableStateOf<Long?>(null) }
-    var seekStartMs by remember { mutableStateOf(0L) }
-    /** 双击跳转的序号：每双击一次 +1，用来重新计时把中央提示收掉（连续双击不会提前消失）。 */
+    var gestureKind by remember { mutableStateOf(LanGestureKind.NONE) }
+    var gestureSeekTargetMs by remember { mutableLongStateOf(0L) }
+    var gestureSeekDeltaMs by remember { mutableLongStateOf(0L) }
+    var gesturePercent by remember { mutableIntStateOf(0) }
+    var doubleTapHint by remember { mutableStateOf<String?>(null) }
     var doubleTapTick by remember { mutableIntStateOf(0) }
 
-    // 双击跳转的提示 700ms 后自己收掉（横滑那条由 onSeekEnd 负责，双击没有"松手"这一刻）
-    LaunchedEffect(doubleTapTick) {
-        if (doubleTapTick > 0) {
-            delay(DOUBLE_TAP_HINT_MS)
-            seekPreviewMs = null
-        }
-    }
+    val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    var dragAccumX by remember { mutableFloatStateOf(0f) }
+    var dragAccumY by remember { mutableFloatStateOf(0f) }
+    var dragStartPosMs by remember { mutableLongStateOf(0L) }
+    var dragStartVol by remember { mutableFloatStateOf(0f) }
+    var dragStartBright by remember { mutableFloatStateOf(0.5f) }
 
-    /**
-     * 系统栏（顶部状态栏 + 底部手势条）的控制器，可见性**跟着控制栏走**：
-     * 控制栏出现时系统栏一起显示，控制栏收起才一起隐藏（不是进播放页就一律隐藏）。
-     */
-    val insetsController = remember(activity) {
-        activity?.window?.let { WindowInsetsControllerCompat(it, it.decorView) }
-    }
-
-    DisposableEffect(insetsController) {
-        // 从屏幕边缘往里划可以临时唤出系统栏（看通知/电量），但不改变控制栏的状态
-        insetsController?.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        onDispose {
-            // 本页不是独立 Activity，只是整屏接管了主界面，所以必须显式还原系统栏
-            insetsController?.show(WindowInsetsCompat.Type.systemBars())
-        }
-    }
-
-    LaunchedEffect(insetsController, overlayVisible) {
-        if (overlayVisible) {
-            insetsController?.show(WindowInsetsCompat.Type.systemBars())
-        } else {
-            insetsController?.hide(WindowInsetsCompat.Type.systemBars())
-        }
-    }
-
-    // 播放中自动收起控件；正在拖动进度条时不收
-    LaunchedEffect(state.playing, overlayVisible, scrubMs) {
-        if (state.playing && overlayVisible && scrubMs == null) {
-            delay(PlayerMotion.OVERLAY_AUTO_HIDE_MS)
+    LaunchedEffect(state.playing, overlayVisible, scrubMs, showSpeedMenu, showLibraryDrawer) {
+        if (state.playing && overlayVisible && scrubMs == null && !showSpeedMenu && !showLibraryDrawer) {
+            delay(OVERLAY_HIDE_MS)
             overlayVisible = false
         }
     }
 
-    // 播放时保持屏幕常亮
+    LaunchedEffect(doubleTapTick) {
+        if (doubleTapHint != null) {
+            delay(850)
+            doubleTapHint = null
+        }
+    }
+
     val view = LocalView.current
     DisposableEffect(state.playing) {
         view.keepScreenOn = state.playing
         onDispose { view.keepScreenOn = false }
     }
 
-    // 亮度/音量都是系统级的，**退出不还原** —— 用户滑到哪就是哪
-
-    BackHandler { onStop() }
-
-    val position = scrubMs ?: state.positionMs
-    val duration = state.durationMs
-
-    // 横滑一整屏宽对应多少时长：片长的 1/3，**不设上限**（见常量注释）
-    val seekWindowMs = (duration / SEEK_WINDOW_DIVISOR).coerceAtLeast(1L)
-
-    fun seekBy(deltaMs: Long) {
-        val target = (position + deltaMs).coerceIn(0L, duration.coerceAtLeast(0L))
-        onSeek(target)
+    DisposableEffect(activity) {
+        onDispose {
+            activity?.window?.let { w ->
+                w.attributes = w.attributes.apply { screenBrightness = -1f }
+            }
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
     }
 
-    // ★ 手势闭包必须读"最新值"，不能读捕获值。
-    //
-    // `pointerInput(Unit)` 的 block 只在 key 变化时重新挂载，它捕获的是**挂载那一刻**这一版
-    // 局部变量；而 `position` 在进这一页时是 0。少了这层 `rememberUpdatedState`，
-    // 双击跳转就会永远按"0"去算 —— 实测症状正是**左双击永远回到 00:00、右双击永远到 00:10**。
-    // 同一坑项目里早记过（见 `PlayerAdjustLayer` 的六个回调、发送端同一处）。
-    val positionNow = rememberUpdatedState(position)
-    val durationNow = rememberUpdatedState(duration)
-    val seekByNow = rememberUpdatedState<(Long) -> Unit> { seekBy(it) }
-
-    /**
-     * 双击左/右 1/3：跳 ±10 秒，并在画面中央闪一下「目标时间 + 偏移」
-     * （复用横滑那个提示 —— 手感和横滑一致，用户不用学第二套反馈）。
-     *
-     * 提示的收尾：横滑由 `onSeekEnd` 清，双击没有"松手"这一刻，所以靠 [doubleTapTick] 起一个
-     * 定时器自己收掉。用计数而不是布尔，是为了连续双击能重新计时。
-     */
-    fun doubleTapSeek(deltaMs: Long) {
-        // 一律读 rememberUpdatedState 里的最新值（见上面的 ★）
-        val dur = durationNow.value
-        if (dur <= 0L) return
-        val start = positionNow.value
-        val target = (start + deltaMs).coerceIn(0L, dur)
-        seekStartMs = start
-        seekByNow.value(deltaMs)
-        seekPreviewMs = target
-        doubleTapTick++
+    BackHandler {
+        when {
+            showLibraryDrawer -> showLibraryDrawer = false
+            else -> onExitToLibrary()
+        }
     }
 
-    /**
-     * 横滑调进度：**边滑边跳**（不是松手才跳）。
-     *
-     * 目标一律从**按下那一刻的位置** `seekStartMs` 算起 —— 如果拿当前 `position` 累加，
-     * 每跳一次位置就变一次，下一帧又在这个新位置上再加，会自激跑飞。
-     */
-    fun seekToLive(fraction: Float) {
-        if (duration <= 0L) return
-        val t = (seekStartMs + (fraction * seekWindowMs).toLong())
-            .coerceIn(0L, duration.coerceAtLeast(0L))
-        seekPreviewMs = t
-        onSeek(t)
+    if (isInPip) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+            contentAlignment = Alignment.Center,
+        ) {
+            VideoSurfaceView(
+                onSurfaceAvailable = onSurfaceAvailable,
+                onSurfaceDestroyed = onSurfaceDestroyed,
+                aspectRatio = if (state.aspect > 0f) state.aspect else 16f / 9f,
+            )
+        }
+        return
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(ImmersiveColors.Background)
-            // 单击切换控制栏显隐；**双击按位置分区**：左 1/3 = 后退 10 秒、中间 1/3 = 播放/暂停、
-            // 右 1/3 = 前进 10 秒（中间那条留着，免得丢了"双击暂停"）。
-            // 用 detectTapGestures 而不是 clickable：只有它能同时拿到单击与双击。
-            //
-            // 代价说明：一旦传了 onDoubleTap，`onTap` 就要等一个双击超时（约 300ms）才能确定
-            // "没有第二下"，所以单击唤出控制栏会比以前慢一点点。这是"单击 / 双击并存"的固有代价。
-            .pointerInput(Unit) {
+            .background(Color.Black)
+            .pointerInput(controlsLocked, state.durationMs) {
                 detectTapGestures(
-                    onTap = { overlayVisible = !overlayVisible },
+                    onTap = {
+                        if (showSpeedMenu) showSpeedMenu = false
+                        else overlayVisible = !overlayVisible
+                    },
                     onDoubleTap = { offset ->
-                        when (doubleTapZone(offset.x, size.width)) {
-                            DoubleTapZone.LEFT -> doubleTapSeek(-SEEK_STEP_MS)
-                            DoubleTapZone.RIGHT -> doubleTapSeek(SEEK_STEP_MS)
-                            DoubleTapZone.CENTER -> onToggle()
+                        if (controlsLocked) return@detectTapGestures
+                        val w = size.width.toFloat().coerceAtLeast(1f)
+                        when {
+                            offset.x < w * 0.32f -> {
+                                onSeekBy(-10_000L)
+                                doubleTapHint = "-10 秒"
+                                doubleTapTick++
+                            }
+                            offset.x > w * 0.68f -> {
+                                onSeekBy(10_000L)
+                                doubleTapHint = "+10 秒"
+                                doubleTapTick++
+                            }
+                            else -> {
+                                onToggle()
+                                overlayVisible = true
+                            }
                         }
                     },
+                )
+            }
+            .pointerInput(controlsLocked, state.durationMs) {
+                detectDragGestures(
+                    onDragStart = {
+                        if (controlsLocked) return@detectDragGestures
+                        dragAccumX = 0f
+                        dragAccumY = 0f
+                        gestureKind = LanGestureKind.NONE
+                        dragStartPosMs = state.positionMs
+                        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                        dragStartVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVol
+                        val curBright = activity?.window?.attributes?.screenBrightness ?: -1f
+                        dragStartBright = if (curBright >= 0f) curBright else 0.5f
+                    },
+                    onDrag = { change, dragAmount ->
+                        if (controlsLocked) return@detectDragGestures
+                        dragAccumX += dragAmount.x
+                        dragAccumY += dragAmount.y
+                        if (gestureKind == LanGestureKind.NONE) {
+                            if (abs(dragAccumX) > 28f && abs(dragAccumX) > abs(dragAccumY)) {
+                                gestureKind = LanGestureKind.SEEK
+                            } else if (abs(dragAccumY) > 28f) {
+                                gestureKind = if (change.position.x < size.width / 2f) {
+                                    LanGestureKind.BRIGHTNESS
+                                } else {
+                                    LanGestureKind.VOLUME
+                                }
+                            }
+                        }
+                        when (gestureKind) {
+                            LanGestureKind.SEEK -> {
+                                if (state.durationMs > 0) {
+                                    val deltaMs = (dragAccumX / size.width.coerceAtLeast(1) * 90_000f).toLong()
+                                    gestureSeekDeltaMs = deltaMs
+                                    gestureSeekTargetMs = (dragStartPosMs + deltaMs).coerceIn(0L, state.durationMs)
+                                }
+                            }
+                            LanGestureKind.BRIGHTNESS -> {
+                                val delta = -dragAccumY / (size.height * 0.65f).coerceAtLeast(1f)
+                                val next = (dragStartBright + delta).coerceIn(0.02f, 1f)
+                                gesturePercent = (next * 100).toInt()
+                                activity?.window?.let { w ->
+                                    w.attributes = w.attributes.apply { screenBrightness = next }
+                                }
+                            }
+                            LanGestureKind.VOLUME -> {
+                                val delta = -dragAccumY / (size.height * 0.65f).coerceAtLeast(1f)
+                                val next = (dragStartVol + delta).coerceIn(0f, 1f)
+                                gesturePercent = (next * 100).toInt()
+                                val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                audioManager.setStreamVolume(
+                                    AudioManager.STREAM_MUSIC,
+                                    (next * maxVol).toInt().coerceIn(0, maxVol),
+                                    0,
+                                )
+                            }
+                            LanGestureKind.NONE -> Unit
+                        }
+                    },
+                    onDragEnd = {
+                        if (gestureKind == LanGestureKind.SEEK && state.durationMs > 0) {
+                            onSeek(gestureSeekTargetMs)
+                        }
+                        gestureKind = LanGestureKind.NONE
+                    },
+                    onDragCancel = { gestureKind = LanGestureKind.NONE },
                 )
             },
         contentAlignment = Alignment.Center,
@@ -266,491 +334,719 @@ fun LanVideoScreen(
         VideoSurfaceView(
             onSurfaceAvailable = onSurfaceAvailable,
             onSurfaceDestroyed = onSurfaceDestroyed,
-            onSurfaceHolder = onSurfaceHolder,
             aspectRatio = if (state.aspect > 0f) state.aspect else 16f / 9f,
+            applyAspectRatio = !fillScreen,
+            modifier = if (fillScreen) Modifier.fillMaxSize() else Modifier,
         )
 
         if (state.buffering) {
-            CircularProgressIndicator(color = ImmersiveColors.OnScrim)
+            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(52.dp))
         }
 
         state.error?.let { msg ->
-            Text(
-                msg,
-                color = ImmersiveColors.Error,
-                style = PlayerType.bodyMedium,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(PlayerSpacing.space6),
-            )
+            Surface(color = Color(0xCC1E1E1E), shape = RoundedCornerShape(14.dp), modifier = Modifier.padding(24.dp)) {
+                Text(
+                    msg,
+                    color = Color(0xFFFF6B6B),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                )
+            }
         }
 
-        // 播放源消失（发送端退出/断网）：中性提示，随后自动收起本页
         state.ended?.let { msg ->
-            Text(
-                msg,
-                color = ImmersiveColors.OnScrim,
-                style = PlayerType.titleSmall,
-                modifier = Modifier
-                    .clip(PillShape)
-                    .background(ImmersiveColors.Scrim)
-                    .padding(
-                        horizontal = PlayerSpacing.space4,
-                        vertical = PlayerSpacing.space2,
-                    ),
-            )
-        }
-
-        // 竖滑调整层：铺在画面之上、控制栏之下。
-        // 放在这里（而不是加在父 Box 的手势里）是为了不跟"单击切控制栏"打架，理由见 PlayerAdjustLayer。
-        PlayerAdjustLayer(
-            onAdjustStart = { target ->
-                adjusting = target
-                // 每次开始滑动都以当前实际值起步，避免上次滑到哪就永远从哪开始
-                when (target) {
-                    PlayerAdjustTarget.BRIGHTNESS -> brightness = SystemBrightness.current(context, activity)
-                    PlayerAdjustTarget.VOLUME -> volume = SystemVolume.current(context)
-                }
-            },
-            onAdjustDelta = { target, delta ->
-                when (target) {
-                    PlayerAdjustTarget.BRIGHTNESS -> {
-                        brightness = (brightness + delta).coerceIn(0f, 1f)
-                        SystemBrightness.apply(context, activity, brightness)
-                    }
-
-                    PlayerAdjustTarget.VOLUME -> {
-                        volume = (volume + delta).coerceIn(0f, 1f)
-                        SystemVolume.apply(context, volume)
-                    }
-                }
-            },
-            onAdjustEnd = { adjusting = null },
-            onSeekStart = {
-                seekStartMs = position
-                seekPreviewMs = seekStartMs
-            },
-            onSeekDelta = { fraction -> seekToLive(fraction) },
-            onSeekEnd = { seekPreviewMs = null },
-            seekEnabled = duration > 0L,
-        )
-
-        // 竖滑时的中央提示
-        adjusting?.let { target ->
-            PlayerAdjustIndicator(
-                target = target,
-                value = when (target) {
-                    PlayerAdjustTarget.BRIGHTNESS -> brightness
-                    PlayerAdjustTarget.VOLUME -> volume
-                },
-                modifier = Modifier.align(Alignment.Center),
-            )
-        }
-
-        // 横滑调进度时的中央提示：跟手显示目标时间与偏移量
-        seekPreviewMs?.let { target ->
-            PlayerSeekIndicator(
-                positionMs = target,
-                deltaMs = target - seekStartMs,
-                modifier = Modifier.align(Alignment.Center),
-            )
-        }
-
-        AnimatedVisibility(
-            visible = overlayVisible,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.TopCenter),
-        ) {
-            PlayerTopBar(
-                title = state.title.ifBlank { stringResource(R.string.lan_video_fallback_title) },
-                onBack = onStop,
-                onDisconnect = onStop,
-            )
-        }
-
-        AnimatedVisibility(
-            visible = overlayVisible,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.BottomCenter),
-        ) {
-            PlayerBottomControls(
-                positionMs = position,
-                durationMs = duration,
-                playing = state.playing,
-                onScrub = { scrubMs = it },
-                onScrubFinished = {
-                    scrubMs?.let(onSeek)
-                    scrubMs = null
-                },
-                onSeekBack = { seekBy(-SEEK_STEP_MS) },
-                onPlayPause = onToggle,
-                onSeekForward = { seekBy(SEEK_STEP_MS) },
-                compact = compact,
-            )
-        }
-    }
-}
-
-/**
- * 顶栏：「返回 + 文件名」，背景全透明（和发送端一致）。
- *
- * **接收端多一个「断开投屏」**：发送端是发起方，它停投送很直观（点「停止投送」）；
- * 接收端原来只有返回箭头，用户不知道那算不算"断开"，而且对面要等 8 秒才反应。
- * 现在这个按钮和返回箭头是同一个动作（停本机 + 立刻通知发送端收尾），
- * 只是把这件事写成字摆出来。发送端播放页没有这个钮 —— 它自己就是发起方。
- */
-@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
-@Composable
-private fun PlayerTopBar(title: String, onBack: () -> Unit, onDisconnect: () -> Unit) {
-    TopAppBar(
-        navigationIcon = {
-            IconButton(onClick = onBack) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = stringResource(R.string.cd_back),
+            Surface(color = Color(0xCC000000), shape = RoundedCornerShape(14.dp)) {
+                Text(
+                    msg,
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(horizontal = 22.dp, vertical = 14.dp),
                 )
             }
-        },
-        title = {
-            Text(
-                text = title,
-                style = PlayerType.titleSmall.onOverlay(),
-                color = ImmersiveColors.OnScrim,
-                maxLines = 1,
-                overflow = TextOverflow.Clip,
-                // 只有一个标题，跑马灯不会像列表那样变成持续动画开销
-                modifier = Modifier.basicMarquee(),
-            )
-        },
-        actions = {
-            TextButton(
-                onClick = onDisconnect,
-                // 点击区按下限 48dp 走，别只按文字大小给
-                modifier = Modifier.height(PlayerSizes.minTouchTarget),
-                contentPadding = PaddingValues(horizontal = PlayerSpacing.space3),
-            ) {
-                Text(
-                    text = stringResource(R.string.lan_disconnect),
-                    style = PlayerType.labelMedium.onOverlay(),
-                    color = ImmersiveColors.OnScrim,
-                )
-            }
-        },
-        colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = Color.Transparent,
-            scrolledContainerColor = Color.Transparent,
-            navigationIconContentColor = ImmersiveColors.OnScrim,
-            titleContentColor = ImmersiveColors.OnScrim,
-            actionIconContentColor = ImmersiveColors.OnScrim,
-        ),
-    )
-}
+        }
 
-/**
- * 底栏：进度条 + 时间码 + 三格控制排（`↺10` · 播放/暂停 · `↷10`）。
- *
- * @param compact 矮屏（横屏手机，可用高度只有 384dp）用的紧凑版：时间码挪到进度条**同一行的两端**、
- *        内边距与间距收紧、主按钮缩到 56dp，省掉一整行的高度。
- */
-@Composable
-private fun PlayerBottomControls(
-    positionMs: Long,
-    durationMs: Long,
-    playing: Boolean,
-    onScrub: (Long) -> Unit,
-    onScrubFinished: () -> Unit,
-    onSeekBack: () -> Unit,
-    onPlayPause: () -> Unit,
-    onSeekForward: () -> Unit,
-    compact: Boolean = false,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            // 不铺任何底色：整条 scrim 底会变成一大块压暗画面的黑板。
-            // 留 navigationBarsPadding 只是保证控制排不被手势条压住。
-            .navigationBarsPadding()
-            .padding(
-                horizontal = PlayerSpacing.edge,
-                vertical = if (compact) PlayerSpacing.space1 else PlayerSpacing.space2,
-            ),
-        verticalArrangement = Arrangement.spacedBy(
-            if (compact) PlayerSpacing.space1 else PlayerSpacing.space2,
-        ),
-    ) {
-        if (compact) {
-            // 紧凑版：时间码与进度条并排一行，省掉整个时间码行的高度
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
+        // 双击提示 HUD
+        AnimatedVisibility(
+            visible = doubleTapHint != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center),
+        ) {
+            Surface(shape = RoundedCornerShape(16.dp), color = Color(0xCC000000)) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        if (doubleTapHint?.startsWith("-") == true) Icons.Rounded.FastRewind else Icons.Rounded.FastForward,
+                        contentDescription = null,
+                        tint = Color.White,
+                    )
+                    Text(doubleTapHint.orEmpty(), color = Color.White, style = MaterialTheme.typography.titleMedium)
+                }
+            }
+        }
+
+        // 滑动手势 HUD
+        AnimatedVisibility(
+            visible = gestureKind != LanGestureKind.NONE,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center),
+        ) {
+            Surface(shape = RoundedCornerShape(18.dp), color = Color(0xD90B0E14)) {
+                when (gestureKind) {
+                    LanGestureKind.SEEK -> Column(
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        val sign = if (gestureSeekDeltaMs >= 0) "+" else "-"
+                        Text(
+                            "$sign${formatTime(abs(gestureSeekDeltaMs))}",
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            "${formatTime(gestureSeekTargetMs)} / ${formatTime(state.durationMs)}",
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    LanGestureKind.BRIGHTNESS, LanGestureKind.VOLUME -> Row(
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            if (gestureKind == LanGestureKind.BRIGHTNESS) Icons.Rounded.Brightness6
+                            else Icons.AutoMirrored.Rounded.VolumeUp,
+                            contentDescription = null,
+                            tint = Color.White,
+                        )
+                        Text("$gesturePercent%", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    }
+                    LanGestureKind.NONE -> Unit
+                }
+            }
+        }
+
+        // 锁定状态仅显示解锁按钮
+        AnimatedVisibility(
+            visible = overlayVisible && controlsLocked,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 24.dp),
+        ) {
+            FilledTonalIconButton(
+                onClick = { controlsLocked = false },
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = Color(0xBB000000),
+                    contentColor = Color.White,
+                ),
             ) {
-                Text(
-                    text = formatTimeCode(positionMs),
-                    style = PlayerType.labelSmall.onOverlay(),
-                    color = ImmersiveColors.TextSecondary,
-                )
-                ScrubBar(
-                    positionMs = positionMs,
-                    durationMs = durationMs,
-                    onScrub = onScrub,
-                    onScrubFinished = onScrubFinished,
+                Icon(Icons.Rounded.Lock, contentDescription = "解锁控件")
+            }
+        }
+
+        // 完整控制浮层
+        AnimatedVisibility(
+            visible = overlayVisible && !controlsLocked,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                // 顶部栏
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .height(COMPACT_SCRUB_HEIGHT)
-                        .padding(horizontal = PlayerSpacing.space2),
-                )
-                Text(
-                    text = formatTimeCode(durationMs),
-                    style = PlayerType.labelSmall.onOverlay(),
-                    color = ImmersiveColors.TextSecondary,
-                )
-            }
-        } else {
-            ScrubBar(
-                positionMs = positionMs,
-                durationMs = durationMs,
-                onScrub = onScrub,
-                onScrubFinished = onScrubFinished,
-            )
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent)))
+                        .statusBarsPadding()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onExitToLibrary) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "退出当前视频", tint = Color.White)
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            state.title.ifBlank { "局域网投屏视频" },
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (state.width > 0 && state.height > 0) {
+                            Text(
+                                "原画直通 · ${state.width}×${state.height}",
+                                color = Color.White.copy(alpha = 0.65f),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    // 选片列表快捷入口（无需退出播放即可切其他视频）
+                    if (remoteLibrary.connected) {
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.88f),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .clickable {
+                                    showSpeedMenu = false
+                                    showLibraryDrawer = true
+                                },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                Icon(Icons.Rounded.VideoLibrary, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Text("选片", color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    // 倍速选择胶囊
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Color(0x55FFFFFF),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .clickable { showSpeedMenu = !showSpeedMenu },
+                    ) {
+                        Text(
+                            formatLanSpeed(state.speed),
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 5.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    IconButton(onClick = onPip) {
+                        Icon(Icons.Rounded.PictureInPictureAlt, contentDescription = "画中画", tint = Color.White)
+                    }
+                }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = formatTimeCode(positionMs),
-                    style = PlayerType.labelMedium.onOverlay(),
-                    color = ImmersiveColors.TextSecondary,
-                )
-                Text(
-                    text = formatTimeCode(durationMs),
-                    style = PlayerType.labelMedium.onOverlay(),
-                    color = ImmersiveColors.TextSecondary,
-                )
+                // 倍速选择条
+                if (showSpeedMenu) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color(0xEE111622),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .statusBarsPadding()
+                            .padding(top = 60.dp, end = 16.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            LAN_SPEED_OPTIONS.forEach { spd ->
+                                val selected = abs(state.speed - spd) < 0.01f
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable {
+                                            onSpeedChange(spd)
+                                            showSpeedMenu = false
+                                        },
+                                ) {
+                                    Text(
+                                        formatLanSpeed(spd),
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 中央播放按钮组（含上一集 / 下一集）
+                Row(
+                    modifier = Modifier.align(Alignment.Center),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(18.dp),
+                ) {
+                    if (prevVideo != null) {
+                        FilledTonalIconButton(
+                            onClick = { onSelectRemoteVideo(prevVideo) },
+                            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                containerColor = Color(0x88000000),
+                                contentColor = Color.White,
+                            ),
+                            modifier = Modifier.size(46.dp),
+                        ) {
+                            Icon(Icons.Rounded.SkipPrevious, contentDescription = "上一个视频")
+                        }
+                    }
+                    FilledTonalIconButton(
+                        onClick = { onSeekBy(-10_000L) },
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = Color(0x88000000),
+                            contentColor = Color.White,
+                        ),
+                        modifier = Modifier.size(52.dp),
+                    ) {
+                        Icon(Icons.Rounded.Replay10, contentDescription = "快退 10 秒")
+                    }
+                    FilledIconButton(
+                        onClick = onToggle,
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = Color(0xD9FFFFFF),
+                            contentColor = Color.Black,
+                        ),
+                        modifier = Modifier.size(68.dp),
+                    ) {
+                        Icon(
+                            if (state.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                            contentDescription = if (state.playing) "暂停" else "播放",
+                            modifier = Modifier.size(38.dp),
+                        )
+                    }
+                    FilledTonalIconButton(
+                        onClick = { onSeekBy(10_000L) },
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = Color(0x88000000),
+                            contentColor = Color.White,
+                        ),
+                        modifier = Modifier.size(52.dp),
+                    ) {
+                        Icon(Icons.Rounded.Forward10, contentDescription = "快进 10 秒")
+                    }
+                    if (nextVideo != null) {
+                        FilledTonalIconButton(
+                            onClick = { onSelectRemoteVideo(nextVideo) },
+                            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                containerColor = Color(0x88000000),
+                                contentColor = Color.White,
+                            ),
+                            modifier = Modifier.size(46.dp),
+                        ) {
+                            Icon(Icons.Rounded.SkipNext, contentDescription = "下一个视频")
+                        }
+                    }
+                }
+
+                // 底部进度与工具栏
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xDD000000))))
+                        .navigationBarsPadding()
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(formatTime(position), color = Color.White, style = MaterialTheme.typography.labelMedium)
+                        Slider(
+                            value = position.toFloat().coerceIn(0f, if (state.durationMs > 0) state.durationMs.toFloat() else 1f),
+                            onValueChange = { scrubMs = it.toLong() },
+                            onValueChangeFinished = {
+                                scrubMs?.let(onSeek)
+                                scrubMs = null
+                            },
+                            valueRange = 0f..(if (state.durationMs > 0) state.durationMs.toFloat() else 1f),
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.White,
+                                activeTrackColor = MaterialTheme.colorScheme.primary,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.28f),
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 12.dp),
+                        )
+                        Text(formatTime(state.durationMs), color = Color.White, style = MaterialTheme.typography.labelMedium)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            IconButton(onClick = { controlsLocked = true }) {
+                                Icon(Icons.Rounded.LockOpen, contentDescription = "锁定控件", tint = Color.White)
+                            }
+                            IconButton(onClick = { fillScreen = !fillScreen }) {
+                                Icon(
+                                    Icons.Rounded.AspectRatio,
+                                    contentDescription = if (fillScreen) "适应比例" else "铺满屏幕",
+                                    tint = if (fillScreen) MaterialTheme.colorScheme.primary else Color.White,
+                                )
+                            }
+                        }
+                        Text(
+                            if (fillScreen) "铺满屏幕" else "原始比例",
+                            color = Color.White.copy(alpha = 0.65f),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        IconButton(
+                            onClick = {
+                                activity?.requestedOrientation = if (isLandscape) {
+                                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                                } else {
+                                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                }
+                            },
+                        ) {
+                            Icon(Icons.Rounded.ScreenRotation, contentDescription = "旋转屏幕", tint = Color.White)
+                        }
+                    }
+                }
             }
         }
 
-        // 三格：后退 10 秒 | 播放暂停 | 前进 10 秒。
-        // 「退出/断开」在顶栏（返回箭头 + 「断开投屏」），控制排里不重复放。
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+        // ---- 播放页内右侧快捷选片抽屉 ----
+        AnimatedVisibility(
+            visible = showLibraryDrawer && remoteLibrary.connected,
+            enter = slideInHorizontally { it } + fadeIn(),
+            exit = slideOutHorizontally { it } + fadeOut(),
+            modifier = Modifier.align(Alignment.CenterEnd),
         ) {
-            PlayerIconSlot(
-                icon = Icons.Filled.Replay10,
-                label = stringResource(R.string.cd_seek_back_10),
-                onClick = onSeekBack,
-            )
-
-            PlayerPlayPauseButton(
-                playing = playing,
-                onClick = onPlayPause,
-                size = if (compact) {
-                    PlayerSizes.playerPrimaryButtonCompact
-                } else {
-                    PlayerSizes.playerPrimaryButton
+            PlayerLibraryDrawer(
+                library = remoteLibrary,
+                onSelect = { item ->
+                    showLibraryDrawer = false
+                    onSelectRemoteVideo(item)
                 },
-            )
-
-            PlayerIconSlot(
-                icon = Icons.Filled.Forward10,
-                label = stringResource(R.string.cd_seek_forward_10),
-                onClick = onSeekForward,
+                onOpenFullLibrary = {
+                    showLibraryDrawer = false
+                    onExitToLibrary()
+                },
+                onClose = { showLibraryDrawer = false },
             )
         }
     }
 }
 
-/**
- * 自绘进度条：**3dp 细轨 + 12dp 圆形滑块**。
- *
- * 与发送端同一份实现。触摸区仍是整行 48dp 高，视觉上的细轨居中对齐其中；
- * 用同一段手势区分按下 / 拖动 / 抬起，所以「松手才下发 seek」不需要防抖。
- */
+/** 播放页内右侧半透明快捷选片抽屉：支持按目录进出、返回上一级、全部视频与全局搜索。 */
 @Composable
-private fun ScrubBar(
-    positionMs: Long,
-    durationMs: Long,
-    onScrub: (Long) -> Unit,
-    onScrubFinished: () -> Unit,
-    modifier: Modifier = Modifier,
+private fun PlayerLibraryDrawer(
+    library: RemoteLibraryState,
+    onSelect: (RemoteVideoItem) -> Unit,
+    onOpenFullLibrary: () -> Unit,
+    onClose: () -> Unit,
 ) {
-    val density = LocalDensity.current
-    var widthPx by remember { mutableFloatStateOf(1f) }
-
-    val maxMs = durationMs.coerceAtLeast(0L)
-    val fraction = if (maxMs > 0L) {
-        (positionMs.toFloat() / maxMs.toFloat()).coerceIn(0f, 1f)
-    } else {
-        0f
+    val activeItem = remember(library.items, library.activeId) {
+        library.items.firstOrNull { it.id == library.activeId }
     }
-    val thumbPx = with(density) { PlayerSizes.scrubThumb.toPx() }
+    val activeFolder = activeItem?.folder.orEmpty()
+    var browseAllFlat by remember { mutableStateOf(false) }
+    var drawerPath by remember(activeFolder) { mutableStateOf(activeFolder) }
+    var query by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
 
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(PlayerSizes.minTouchTarget)
-            .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
-            .pointerInput(maxMs) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
+    val trimmedQuery = query.trim()
+    val inSearch = trimmedQuery.isNotEmpty()
 
-                    fun emit(x: Float) {
-                        if (maxMs > 0L) {
-                            onScrub((x / widthPx * maxMs).toLong().coerceIn(0L, maxMs))
-                        }
-                    }
+    val folders = remember(library.items, drawerPath, browseAllFlat, inSearch) {
+        if (browseAllFlat || inSearch) emptyList()
+        else RemoteVideoLibrary.foldersIn(library.items, drawerPath)
+    }
+    val videos = remember(library.items, drawerPath, browseAllFlat, trimmedQuery) {
+        when {
+            trimmedQuery.isNotEmpty() -> library.items.filter {
+                it.name.contains(trimmedQuery, ignoreCase = true) ||
+                    it.folder.contains(trimmedQuery, ignoreCase = true)
+            }
+            browseAllFlat -> library.items
+            else -> RemoteVideoLibrary.videosIn(library.items, drawerPath)
+        }
+    }
 
-                    emit(down.position.x)
-                    down.consume()
+    LaunchedEffect(drawerPath, browseAllFlat, videos.size, library.activeId) {
+        if (!inSearch && library.activeId.isNotBlank()) {
+            val idx = videos.indexOfFirst { it.id == library.activeId }
+            if (idx >= 0) {
+                val upOffset = if (!browseAllFlat && drawerPath.isNotEmpty()) 1 else 0
+                listState.scrollToItem((upOffset + folders.size + idx - 1).coerceAtLeast(0))
+            } else {
+                listState.scrollToItem(0)
+            }
+        }
+    }
 
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        if (!change.pressed) break
-                        if (change.positionChanged()) {
-                            emit(change.position.x)
-                            change.consume()
-                        }
-                    }
-                    onScrubFinished()
-                }
-            },
-        contentAlignment = Alignment.CenterStart,
+    Surface(
+        color = Color(0xEC0D111A),
+        contentColor = Color.White,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(380.dp)
+            .clickable(enabled = false) {},
     ) {
-        Box(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(PlayerSizes.scrubTrackHeight)
-                .clip(CircleShape)
-                .background(ImmersiveColors.ScrubTrackInactive),
-        )
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(fraction)
-                .height(PlayerSizes.scrubTrackHeight)
-                .clip(CircleShape)
-                .background(ImmersiveColors.Accent),
-        )
-        Box(
-            modifier = Modifier
-                .offset {
-                    IntOffset(
-                        x = (fraction * widthPx - thumbPx / 2f).roundToInt(),
-                        y = 0,
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = when {
+                            inSearch -> "搜索结果"
+                            browseAllFlat -> "全部视频"
+                            drawerPath.isEmpty() -> "全部目录"
+                            else -> drawerPath.substringAfterLast('/')
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = when {
+                            !browseAllFlat && !inSearch && drawerPath.isNotEmpty() -> drawerPath
+                            else -> "${library.deviceName.ifBlank { "手机" }} · ${videos.size} 个视频"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.6f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-                .size(PlayerSizes.scrubThumb)
-                .clip(CircleShape)
-                .background(ImmersiveColors.ScrubThumb),
-        )
-    }
-}
+                TextButton(onClick = onOpenFullLibrary) {
+                    Text("全屏浏览")
+                }
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Rounded.Close, contentDescription = "关闭", tint = Color.White)
+                }
+            }
 
-/** 次级图标槽：固定 48dp 见方的点击区，图标 24dp。 */
-@Composable
-private fun PlayerIconSlot(
-    icon: ImageVector,
-    label: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Box(
-        modifier = modifier
-            .size(PlayerSizes.minTouchTarget)
-            .clip(CircleShape)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        ShadowedIcon(icon = icon, contentDescription = label)
-    }
-}
+            // 模式切换 + 一键返回上一级
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (!browseAllFlat) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { browseAllFlat = false },
+                ) {
+                    Box(modifier = Modifier.padding(vertical = 7.dp), contentAlignment = Alignment.Center) {
+                        Text("按文件夹", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (browseAllFlat) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { browseAllFlat = true },
+                ) {
+                    Box(modifier = Modifier.padding(vertical = 7.dp), contentAlignment = Alignment.Center) {
+                        Text("全部视频 (${library.items.size})", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
 
-/** 播放/暂停：视觉主体，默认 64dp 实心圆 + 32dp 图标（矮屏紧凑版 56dp）。 */
-@Composable
-private fun PlayerPlayPauseButton(
-    playing: Boolean,
-    onClick: () -> Unit,
-    size: Dp = PlayerSizes.playerPrimaryButton,
-) {
-    Box(
-        modifier = Modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(ImmersiveColors.Accent)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-            contentDescription = stringResource(R.string.cd_play_pause),
-            tint = ImmersiveColors.Background,
-            modifier = Modifier.size(PlayerSizes.playerPrimaryGlyph),
-        )
-    }
-}
-
-/**
- * 浮层文字的投影。顶栏/底栏全透明后，白字是直接压在画面上的 ——
- * 亮场景里没有底就没有对比度，用一层黑色投影代替 scrim 垫底（字幕的通行做法）。
- */
-private val OverlayTextShadow = Shadow(
-    color = ImmersiveColors.Shadow.copy(alpha = 0.75f),
-    offset = Offset(0f, 1f),
-    blurRadius = 7f,
-)
-
-/** 浮层文字：套上 [OverlayTextShadow]。 */
-private fun TextStyle.onOverlay(): TextStyle = copy(shadow = OverlayTextShadow)
-
-/**
- * 浮层图标的投影分层：从「贴近本体、稍浓」到「越往下越淡」，叠出柔和感。
- *
- * `Icon` 不像 `Text` 那样有 `shadow` 参数，矢量路径也不好直接拿去 blur，
- * 所以用同一个图往下偏几层、逐层降透明度来近似 —— 方向与 [OverlayTextShadow] 一致
- * （只往下偏，不做四周围一圈的描边）。
- */
-private val IconShadowLayers = listOf(
-    1.dp to 0.55f,
-    2.dp to 0.30f,
-    3.dp to 0.15f,
-)
-
-/** 带投影的浮层图标。 */
-@Composable
-private fun ShadowedIcon(
-    icon: ImageVector,
-    contentDescription: String?,
-    modifier: Modifier = Modifier,
-    size: Dp = PlayerSizes.playerSecondaryGlyph,
-    tint: Color = ImmersiveColors.OnScrim,
-    shadowScale: Float = 1f,
-) {
-    Box(modifier.size(size)) {
-        IconShadowLayers.forEach { (dy, alpha) ->
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = ImmersiveColors.Shadow.copy(alpha = alpha * shadowScale),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .offset(y = dy),
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text("搜索发送端所有视频…", color = Color.White.copy(alpha = 0.5f)) },
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(18.dp)) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { query = "" }) {
+                            Icon(Icons.Rounded.Close, contentDescription = "清空", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
+                        }
+                    }
+                },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth(),
             )
+
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                // 上一级目录选项（置顶方便单手点按）
+                if (!browseAllFlat && !inSearch && drawerPath.isNotEmpty()) {
+                    val parentPath = drawerPath.substringBeforeLast('/', "")
+                    val parentLabel = if (parentPath.isEmpty()) "全部目录" else parentPath.substringAfterLast('/')
+                    item(key = "__parent__") {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { drawerPath = parentPath },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Icon(
+                                    Icons.Rounded.ArrowUpward,
+                                    contentDescription = "返回上一级",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        "返回上一级",
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.titleSmall,
+                                    )
+                                    Text(
+                                        "上级目录：$parentLabel",
+                                        color = Color.White.copy(alpha = 0.65f),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 当前目录下的子文件夹
+                items(folders, key = { "df:" + it.path }) { folder ->
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color.White.copy(alpha = 0.08f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { drawerPath = folder.path },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Icon(
+                                Icons.Rounded.Folder,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp),
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    folder.name,
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    if (folder.subFolderCount > 0) "${folder.totalCount} 个视频 · ${folder.subFolderCount} 个子目录"
+                                    else "${folder.totalCount} 个视频",
+                                    color = Color.White.copy(alpha = 0.55f),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            Icon(
+                                Icons.Rounded.ChevronRight,
+                                contentDescription = null,
+                                tint = Color.White.copy(alpha = 0.5f),
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
+
+                // 视频条目
+                items(videos, key = { "dv:" + it.id }) { item ->
+                    val active = item.id == library.activeId
+                    val thumb by produceState<Bitmap?>(initialValue = RemoteThumbCache.cached(item.thumbUrl), item.thumbUrl) {
+                        value = RemoteThumbCache.load(item.thumbUrl)
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.06f),
+                        border = if (active) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onSelect(item) },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(86.dp)
+                                    .aspectRatio(16f / 9f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF1A202E)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                val bmp = thumb
+                                if (bmp != null) {
+                                    Image(
+                                        bitmap = bmp.asImageBitmap(),
+                                        contentDescription = item.name,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                } else {
+                                    Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Color.White.copy(alpha = 0.5f))
+                                }
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    item.name,
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    buildString {
+                                        if (active) append("正在播放 · ")
+                                        if (item.durationMs > 0) append(RemoteVideoLibrary.formatDuration(item.durationMs))
+                                        if ((browseAllFlat || inSearch) && item.folder.isNotEmpty()) {
+                                            if (isNotEmpty()) append(" · ")
+                                            append(item.folder.substringAfterLast('/'))
+                                        }
+                                    },
+                                    color = if (active) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.55f),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
-        Icon(
-            imageVector = icon,
-            contentDescription = contentDescription,
-            tint = tint,
-            modifier = Modifier.fillMaxSize(),
-        )
     }
 }
 
-/** 时间码：0 也显示 00:00（`--:--` 会让人以为没在计时）。 */
-private fun formatTimeCode(ms: Long): String {
+private fun formatLanSpeed(speed: Float): String =
+    if (speed == speed.toInt().toFloat()) "${speed.toInt()}.0x" else "${speed}x"
+
+private fun formatTime(ms: Long): String {
     if (ms <= 0) return "00:00"
     val total = ms / 1000
     val h = total / 3600
@@ -759,34 +1055,4 @@ private fun formatTimeCode(ms: Long): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
 }
 
-/** 矮屏（横屏手机）判据：可用高度低于这个值就用紧凑底栏。 */
-private const val COMPACT_HEIGHT_THRESHOLD_DP = 480
-
-/** 紧凑版进度条的触摸行高：比常规的 48dp 矮一点，横屏下省出来的高度很关键。 */
-private val COMPACT_SCRUB_HEIGHT = 32.dp
-
-/** ±10 秒的步长。 */
-private const val SEEK_STEP_MS = 10_000L
-
-/** 双击跳转后中央提示停留多久。 */
-private const val DOUBLE_TAP_HINT_MS = 700L
-
-/** 双击分区：左 / 中 / 右各 1/3。中间那条留给"播放/暂停"，否则双击暂停就没地方点了。 */
-private enum class DoubleTapZone { LEFT, CENTER, RIGHT }
-
-private fun doubleTapZone(x: Float, width: Int): DoubleTapZone = when {
-    width <= 0 -> DoubleTapZone.CENTER
-    x < width / 3f -> DoubleTapZone.LEFT
-    x > width * 2f / 3f -> DoubleTapZone.RIGHT
-    else -> DoubleTapZone.CENTER
-}
-
-/**
- * 横滑调进度时，**一整屏宽**对应片长的几分之一。
- *
- * 取三分之一，也就是"整段片子 = 三次整屏滑动"，长短片的**手感比例一致**：与发送端同值。
- *
- * 两版历史都是坑：最早「短片取片长本身」→ 85 秒片源一屏宽 = 整片，轻滑就归零；
- * 之后「片长与 90 秒取小」→ 所有超过 4 分半的片子退化成同一个灵敏度。所以这次不设上限。
- */
-private const val SEEK_WINDOW_DIVISOR = 3
+private const val OVERLAY_HIDE_MS = 4000L

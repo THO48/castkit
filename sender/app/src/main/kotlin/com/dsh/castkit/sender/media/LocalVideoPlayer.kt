@@ -3,32 +3,26 @@ package com.dsh.castkit.sender.media
 import android.content.Context
 import android.net.Uri
 import android.os.Handler
-import android.os.HandlerThread
-import android.os.ParcelFileDescriptor
-import android.util.Log
+import android.os.Looper
 import android.view.Surface
-import android.view.SurfaceHolder
+import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.SeekParameters
-import androidx.media3.exoplayer.analytics.AnalyticsListener
-import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.DecoderManager
-import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.DecoderMode
-import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
-import org.videolan.libvlc.LibVLC
-import org.videolan.libvlc.Media
-import org.videolan.libvlc.MediaPlayer as VlcMediaPlayer
-import org.videolan.libvlc.interfaces.IVLCVout
+import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlin.math.roundToInt
 
 /** 应用内本地播放状态。 */
 data class LocalPlaybackState(
@@ -40,50 +34,19 @@ data class LocalPlaybackState(
     val durationMs: Long = 0,
     val width: Int = 0,
     val height: Int = 0,
+    val speed: Float = 1f,
+    val completed: Boolean = false,
     val error: String? = null,
-    /** 本次播放是"从上次的进度接着播"的：非 0 时播放页提示一次「已从 xx:xx 继续播放」。 */
-    val resumedFromMs: Long = 0,
 ) {
     val aspect: Float get() = if (width > 0 && height > 0) width.toFloat() / height else 16f / 9f
 }
 
 /**
- * 应用内本地视频播放器（选视频即播放，不再只是"选中"）。
- *
- * ## 为什么从系统 `MediaPlayer` 换成 Media3 ExoPlayer（2026-09 真机实测）
- *
- * 原来用系统 `MediaPlayer` 播 `content://` 视频。它对**解封装**环节毫无自主权 ——
- * 用的是安卓自带的 `MPEG4Extractor`，而那个解封装器遇到病态容器时间基会**直接弃轨**：
- *
- * ```
- * MPEG4Extractor: track->timescale overflow
- * ```
- *
- * （实测样本：`mdhd` timescale = 2^31−1、VUI `time_scale` = 2^32−2。）
- * 症状是**有声音、进度条在走、画面全黑**，而且全程**连视频解码器都不会创建** ——
- * 问题根本不在解码器，换软解也没用。
- *
- * Media3 的 `Mp4Extractor` 是它自己用 Java 重写的实现，时间戳走防溢出的
- * `Util.scaleLargeTimestamp`，换成它之后同一台机器就能正常出画面。
- *
- * ## 再叠一层 FFmpeg（NextLib）
- *
- * 换掉解封装只是解决一半。**解码器**那一侧仍可能吃不下：实测 1080i MBAFF 隔行流会被
- * 某些硬解器**静默丢弃每一个 buffer**（`MediaCodec discarded an unknown buffer`），
- * 同样黑屏、同样不报错。NextLib 文档明确写了 `AUTO` 只在"平台解不了这个格式"时兜底，
- * **不会从运行期解码失败里恢复**，所以这里配了看门狗：起播若干秒没渲染出第一帧就切
- * `DecoderMode.FFMPEG`（切换是 remap tracks without stopping，不打断播放）。
- * 正常片源不受影响，仍然走硬解。
- *
- * ## 这里刻意「不做」播放前预检
- *
- * 之前这里会先用 `MediaExtractor` + `MediaCodecList` 预检，按「**本机**有没有解码器」
- * 拦截播放。接收端集成 FFmpeg 之后这个逻辑变成错的：发送端硬件解不了的格式
- * （如 MPEG-2/PS），接收端靠软解照样能播 —— 按本机能力拦截会把本来能投的片子拦下来。
- * 所以预检整个撤掉，改成「交给播放器判断 + 按错误类型给人话」。
- *
- * 线程约定：ExoPlayer 必须在带 Looper 的线程上创建和访问，这里统一 post 到主线程。
+ * 应用内本地视频播放器（基于 Media3 ExoPlayer）：
+ * - 支持倍速、快进/快退、断点续播；
+ * - 硬件解码失败自动回落软件解码，内置有声黑屏自检看门狗与安全 Surface 生命周期管理。
  */
+@OptIn(UnstableApi::class)
 class LocalVideoPlayer(
     private val context: Context,
     private val onLog: (String) -> Unit = {},
@@ -91,373 +54,321 @@ class LocalVideoPlayer(
 
     private val _state = MutableStateFlow(LocalPlaybackState())
     val state: StateFlow<LocalPlaybackState> = _state.asStateFlow()
-    /**
-     * **播放器自己的线程**（不是主线程）。
-     *
-     * 为什么必须这样：Media3 把渲染器/分析回调投递到**播放器所在的 Looper**，而新版里这类回调
-     * 是**逐帧**的（`onVideoFrameProcessingOffset`），每个回调都要读一次播放位置（拿播放器的
-     * 内部锁 + 走时间线）。挂在主线程上的后果是真机实测出来的：长片退出播放页时，主线程为了排完
-     * 这些积压，**单帧耗时 2059ms**（系统 `Davey! duration=2059ms`），用户看到的就是
-     * "画面在但点不动"——而且它跟"保存播放进度"毫无关系（那条路早就在后台线程，实测 0ms）。
-     * 播放器挪到自己的线程后，这些回调不再和 UI 抢主线程，卡顿从根上消失。
-     *
-     * 注意：`ExoPlayer` 要求"所有调用都在同一个 Looper 上"——所以本类**所有**对播放器的操作
-     * 都必须经由 [handler]（曾经是主线程 Handler，现在指向播放器线程），不能直接在主线程碰 player。
-     */
-    private val playerThread = HandlerThread("castkit-player").apply { start() }
-    private val handler = Handler(playerThread.looper)
 
+    private val main = Handler(Looper.getMainLooper())
     private var player: ExoPlayer? = null
 
-    /**
-     * 诊断日志同时写 logcat 和上层回调。
-     *
-     * `PlayerViewModel` 构造本类时**没有**传 onLog，所以只走回调的话这些"用了哪个解码器 /
-     * 有没有丢帧"的关键信息在真机上是完全看不到的 —— 而排查播放问题恰恰全靠它们。
-     */
-    private fun log(msg: String) {
-        Log.d(TAG, msg)
-        onLog(msg)
-    }
-
-    /** 本次播放是否已经播到结尾（`STATE_ENDED` / libVLC `EndReached`）。 */
-    private var reachedEnd = false
-
-    /**
-     * 播放进度落盘的专用线程（懒建、守护线程）。
-     *
-     * 单线程是刻意的：写入要保序（后写的进度不能被先写的覆盖），而 `apply()` 本身也只排一次队。
-     */
-    private val saveExecutor by lazy {
-        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
-            Thread(r, "castkit-save-progress").apply { isDaemon = true }
-        }
-    }
-
-    /** 运行时解码器选择器（NextLib）。必须与 player 一对一，且在 prepare 之前 attach。 */
-    private var decoderManager: DecoderManager? = null
-
-    // ------------------------------------------------------------------
-    // libVLC 兜底内核
-    //
-    // 为什么需要：Media3 与 NextLib **都没有 ASF 解封装器**（NextLib 源码里开了
-    // --enable-avformat，但发布出的 AAR 不带 libavformat.so），而 NextLib 的 MIME
-    // 白名单又不含 WMV/WMA、解码类还是包级私有 —— 所以 WMV/WMA 既解不出来也接不上。
-    // libVLC 自带 FFmpeg 的解封装器，一次把这类容器全兜住。
-    //
-    // 策略：ExoPlayer 优先（已实测的路径不动），只有它报「容器/编码不认识」时才切过来。
-    // ------------------------------------------------------------------
-
-    private var vlcPlayer: VlcMediaPlayer? = null
-
-    /** 本次播放是否已经交给过 libVLC（避免来回切）。 */
-    private var vlcTried = false
-
-    /** libVLC 播 `content://` 时我们自己持有的文件句柄，播放结束才能关。 */
-    private var vlcFd: ParcelFileDescriptor? = null
-
-    /** libVLC 是否已经出过画（收到 Vout 事件）。实测有概率起播后一直不出画，靠看门狗兜。 */
-    private var vlcFirstVout = false
-    private var vlcVoutRetry = 0
-    private var vlcWatchdog: Runnable? = null
-
     @Volatile
-    private var surface: Surface? = null
-
-    /** 渲染区域真实像素尺寸的唯一来源（libVLC 的 vout 需要，Surface 本身查不到）。 */
-    @Volatile
-    private var surfaceHolder: SurfaceHolder? = null
+    private var pendingSurface: Surface? = null
+    private var surfaceBound = false
 
     private var ticker: Runnable? = null
-    private var watchdog: Runnable? = null
+    private var blackScreenWatchdog: Runnable? = null
 
-    /** 本次播放是否已经渲染出过第一帧。 */
-    private var firstFrameRendered = false
+    private var currentUri: Uri? = null
+    private var prepared = false
+    private var pendingSeekMs = -1L
+    private var desiredSpeed = 1f
 
-    /** 0 = 还在硬解；1 = 已经切到 FFmpeg。 */
-    private var fallbackStage = 0
-
-    /** 累计丢帧：软解路径没有 MediaCodec 的统计日志，只能自己数。 */
-    private var droppedFramesTotal = 0
-    private var droppedFramesLogged = 0
+    private var hasVideoTrack = false
+    private var renderedFirstFrame = false
+    private var usingSoftwareVideo = false
+    private var softwareFallbackAttempted = false
 
     fun setSurface(s: Surface?) {
-        surface = s
-        log("setSurface ${s?.let { "valid=${it.isValid} id=${System.identityHashCode(it)}" } ?: "null"} vlc=${vlcPlayer != null}")
-        handler.post {
-            val vlc = vlcPlayer
-            if (vlc != null) {
-                // libVLC 换 Surface 必须 detach -> set -> attach，直接 set 可能不生效
-                runCatching { vlc.vlcVout.detachViews() }
-                if (s != null) {
-                    runCatching { vlc.vlcVout.setVideoSurface(s, surfaceHolder) }
-                    runCatching { vlc.vlcVout.attachViews() }
-                    applyVlcWindowSize(vlc.vlcVout)
+        main.post {
+            if (s == null) {
+                pendingSurface = null
+                surfaceBound = false
+                player?.setVideoSurface(null)
+                return@post
+            }
+            if (pendingSurface === s && surfaceBound && player != null) return@post
+            pendingSurface = s
+            player?.let { p ->
+                p.setVideoSurface(s)
+                surfaceBound = true
+                if (p.playbackState == Player.STATE_READY && p.playWhenReady && !renderedFirstFrame) {
+                    scheduleBlackScreenWatchdog()
                 }
-            } else {
-                runCatching { player?.setVideoSurface(s) }
             }
         }
     }
 
-    /** 渲染区域的实际像素尺寸只能从 SurfaceHolder 拿；libVLC 在跑时拿到就立刻纠正。 */
-    fun setSurfaceHolder(holder: SurfaceHolder) {
-        surfaceHolder = holder
-        handler.post {
-            val vlc = vlcPlayer ?: return@post
-            if (runCatching { vlc.vlcVout.areViewsAttached() }.getOrDefault(false)) {
-                applyVlcWindowSize(vlc.vlcVout)
-            }
+    /** 仅在销毁的 Surface 仍是当前有效 Surface 时解绑，避免切换布局误清空新画面。 */
+    fun clearSurface(surface: Surface) {
+        main.post {
+            if (pendingSurface !== surface) return@post
+            pendingSurface = null
+            surfaceBound = false
+            player?.clearVideoSurface(surface)
         }
     }
 
-    /**
-     * 加载片源并（默认）起播。
-     *
-     * [autoPlay] = false 用于**投送中换集**：手机这时是遥控器，画面在接收端，本机只换片源、
-     * 不出声也不占扬声器；等投送结束再由接管逻辑 seek 到接收端的位置接着播。
-     * 这里刻意**不改用"play 完再 pause"**：`pause()` 有 `if (p.isPlaying)` 守卫，而刚 `play()`
-     * 的播放器通常还在缓冲（`isPlaying=false`），那一记 pause 会直接落空、片子照样播起来。
-     * 同理 [autoPlay] = false 时也不读 [PlaybackProgress] —— 否则会弹一句"已从上次的 xx:xx 继续播放"，
-     * 而实际上接收端是从头播的，属于误导。
-     */
-    fun play(uri: Uri, title: String, autoPlay: Boolean = true) {
-        handler.post {
-            releaseInternal()
-            firstFrameRendered = false
-            fallbackStage = 0
-            vlcTried = false
-            reachedEnd = false
-            // 上次看到一半：这次接着播（记住的进度见 PlaybackProgress）
-            val resumeFrom = if (autoPlay) PlaybackProgress.get(context, uri) else 0L
+    fun play(uri: Uri, title: String, startPositionMs: Long = 0L) {
+        main.post {
+            cancelBlackScreenWatchdog()
+            currentUri = uri
+            prepared = false
+            desiredSpeed = 1f
+            pendingSeekMs = startPositionMs.takeIf { it > 0L } ?: -1L
+            hasVideoTrack = false
+            renderedFirstFrame = false
+            softwareFallbackAttempted = false
             _state.value = LocalPlaybackState(
                 uri = uri,
                 title = title,
                 buffering = true,
-                resumedFromMs = resumeFrom,
+                positionMs = startPositionMs.coerceAtLeast(0L),
             )
-            log(
-                when {
-                    !autoPlay -> "本地加载（只加载不播放，投送中换集）: $uri"
-                    resumeFrom > 0 -> "本地播放: $uri（从 ${resumeFrom}ms 继续）"
-                    else -> "本地播放: $uri"
-                },
-            )
+            onLog("本地播放: $uri")
+            startPlaybackInternal(uri = uri, startPositionMs = startPositionMs.coerceAtLeast(0L), preferSoftwareVideo = false)
+        }
+    }
 
-            val manager = DecoderManager()
-            decoderManager = manager
-            val renderersFactory = NextRenderersFactory(context)
-                .setDecoderManager(manager)
-                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+    private fun startPlaybackInternal(
+        uri: Uri,
+        startPositionMs: Long,
+        preferSoftwareVideo: Boolean,
+    ) {
+        cancelBlackScreenWatchdog()
+        renderedFirstFrame = false
+        hasVideoTrack = false
 
-            val p = try {
-                // 显式指定 Looper：播放器（连同它的所有回调）都活在这条自己的线程上，
-                // 不去占主线程 —— 理由见 playerThread 的注释
-                ExoPlayer.Builder(context)
-                    .setLooper(handler.looper)
-                    .setRenderersFactory(renderersFactory)
-                    .build()
-            } catch (e: Throwable) {
-                log("ExoPlayer 创建失败: ${e.message}")
-                _state.value = _state.value.copy(error = e.message ?: "播放器创建失败", buffering = false)
-                decoderManager = null
-                return@post
+        val needRecreate = player == null || usingSoftwareVideo != preferSoftwareVideo
+        val p = if (needRecreate) {
+            releasePlayerOnly()
+            usingSoftwareVideo = preferSoftwareVideo
+            buildExoPlayer(preferSoftwareVideo).also { created ->
+                player = created
+                pendingSurface?.let { s ->
+                    if (s.isValid) {
+                        created.setVideoSurface(s)
+                        surfaceBound = true
+                    }
+                }
             }
-            player = p
-            try {
-                // 必须在 prepare 之前 attach；ExoPlayer 默认就是 DefaultTrackSelector，满足前提
-                runCatching { manager.attach(p) }
-                p.setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(C.USAGE_MEDIA)
-                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-                        .build(),
-                    /* handleAudioFocus = */ true,
-                )
-                // Media3 1.11 没有 `C.SEEK_CLOSEST`；精确 seek 改用 SeekParameters 表达，
-                // 与原来 `seekTo(ms, SEEK_CLOSEST)` 的语义一致（播放页进度条依赖这个精度）。
-                p.setSeekParameters(SeekParameters.EXACT)
-                p.setVideoSurface(surface)
-                p.addListener(object : Player.Listener {
-                    override fun onPlaybackStateChanged(playbackState: Int) {
-                        when (playbackState) {
-                            Player.STATE_BUFFERING ->
-                                _state.value = _state.value.copy(buffering = true)
+        } else {
+            player!!.also { existing ->
+                existing.stop()
+                existing.clearMediaItems()
+                pendingSurface?.let { s ->
+                    if (s.isValid && !surfaceBound) {
+                        existing.setVideoSurface(s)
+                        surfaceBound = true
+                    }
+                }
+            }
+        }
 
-                            Player.STATE_READY -> {
-                                _state.value = _state.value.copy(
-                                    buffering = false,
-                                    playing = p.isPlaying,
-                                    durationMs = p.duration.takeIf { it != C.TIME_UNSET }
-                                        ?.coerceAtLeast(0) ?: 0L,
-                                )
-                                startTicker()
-                                // 就绪了才谈得上「有没有画面」，看门狗从这时开始计时。
-                                // 投送中换集（autoPlay=false）时**不给本机看门狗**：本机没在播，
-                                // 一旦硬解不出帧就会误判成"这个片源接收端放不了"并弹错；
-                                // 等真正接管播放时（resume）再补上。
-                                if (autoPlay) scheduleWatchdog(NO_FRAME_FALLBACK_MS)
-                            }
+        try {
+            val item = MediaItem.fromUri(uri)
+            if (startPositionMs > 0L) {
+                p.setMediaItem(item, startPositionMs)
+            } else {
+                p.setMediaItem(item)
+            }
+            p.playbackParameters = PlaybackParameters(desiredSpeed)
+            p.playWhenReady = true
+            p.prepare()
+        } catch (e: Throwable) {
+            onLog("本地播放加载失败: ${e.message}")
+            _state.value = _state.value.copy(error = e.message ?: "加载失败", buffering = false)
+            releasePlayerOnly()
+        }
+    }
 
-                            Player.STATE_ENDED -> {
-                                reachedEnd = true
-                                _state.value = _state.value.copy(
-                                    playing = false,
-                                    positionMs = _state.value.durationMs,
-                                )
-                                stopTicker()
-                                // 看完了：把记住的进度清掉，下次从头播（而不是从结尾接着播）
-                                _state.value.uri?.let { PlaybackProgress.clear(context, it) }
-                            }
+    private fun buildExoPlayer(preferSoftwareVideo: Boolean): ExoPlayer {
+        val codecSelector = if (preferSoftwareVideo) {
+            SoftwarePreferredCodecSelector
+        } else {
+            MediaCodecSelector.DEFAULT
+        }
+        val renderersFactory = DefaultRenderersFactory(context)
+            .setEnableDecoderFallback(true)
+            .setMediaCodecSelector(codecSelector)
 
-                            Player.STATE_IDLE -> Unit
+        val trackSelector = DefaultTrackSelector(context).apply {
+            parameters = buildUponParameters()
+                .setExceedVideoConstraintsIfNecessary(true)
+                .setExceedRendererCapabilitiesIfNecessary(true)
+                .build()
+        }
+
+        val audioAttrs = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
+
+        return ExoPlayer.Builder(context, renderersFactory)
+            .setTrackSelector(trackSelector)
+            .setAudioAttributes(audioAttrs, true)
+            .setHandleAudioBecomingNoisy(true)
+            .build()
+            .apply {
+                videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+                addListener(playerListener)
+            }
+    }
+
+    private val playerListener = object : Player.Listener {
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            val p = player ?: return
+            when (playbackState) {
+                Player.STATE_BUFFERING -> {
+                    _state.value = _state.value.copy(buffering = true)
+                }
+                Player.STATE_READY -> {
+                    val rawDur = p.duration
+                    val dur = if (rawDur != C.TIME_UNSET && rawDur > 0L) rawDur else 0L
+                    if (!prepared) {
+                        prepared = true
+                        val pending = pendingSeekMs
+                        pendingSeekMs = -1L
+                        if (pending > 0L && (dur == 0L || pending < dur - 2000L)) {
+                            p.seekTo(pending)
+                        }
+                        if (desiredSpeed != 1f) {
+                            p.playbackParameters = PlaybackParameters(desiredSpeed)
                         }
                     }
-
-                    override fun onIsPlayingChanged(isPlaying: Boolean) {
-                        _state.value = _state.value.copy(playing = isPlaying, buffering = false)
-                        if (isPlaying) {
-                            // 又放起来了（重播/拖回去接着看）：不再是"已看完"
-                            reachedEnd = false
-                            startTicker()
+                    _state.value = _state.value.copy(
+                        buffering = false,
+                        playing = p.playWhenReady,
+                        completed = false,
+                        durationMs = dur,
+                        positionMs = p.currentPosition.coerceAtLeast(0L),
+                    )
+                    if (p.playWhenReady) {
+                        startTicker()
+                        if (!renderedFirstFrame && pendingSurface != null) {
+                            scheduleBlackScreenWatchdog()
                         }
-                    }
-
-                    override fun onRenderedFirstFrame() {
-                        firstFrameRendered = true
-                        cancelWatchdog()
-                        // 续播那次"关键帧对齐"的 seek 已经过关，恢复精确 seek（拖动进度条要它）
-                        runCatching { p.setSeekParameters(SeekParameters.EXACT) }
-                        // 报告**真实**用的解码器，而不是"看门狗有没有触发" ——
-                        // 有些片源是 Media3 自己就路由到 FFmpeg 的，看门狗根本没机会触发
-                        log("画面已出（${decoderModeLabel()}）")
-                    }
-
-                    override fun onVideoSizeChanged(videoSize: VideoSize) {
-                        if (videoSize.width <= 0 || videoSize.height <= 0) return
-                        // MediaPlayer 的 onVideoSizeChanged 给的是**显示**尺寸，
-                        // 这里把像素宽高比折算进去，UI 里的比例计算保持一致
-                        val ratio = videoSize.pixelWidthHeightRatio.takeIf { it > 0f } ?: 1f
-                        _state.value = _state.value.copy(
-                            width = (videoSize.width * ratio).roundToInt(),
-                            height = videoSize.height,
-                        )
-                    }
-
-                    override fun onPlayerError(error: PlaybackException) {
-                        // ExoPlayer 连容器都不认识（WMV/ASF 等）时交给 libVLC 再试一次，
-                        // 不要直接把「播不了」甩给用户
-                        if (!vlcTried && isHandoffError(error)) {
-                            vlcTried = true
-                            log("ExoPlayer 处理不了（${error.errorCodeName}），改用 libVLC 兜底")
-                            switchToVlc(uri, title, _state.value.positionMs)
-                            return
-                        }
-                        val friendly = friendlyMessage(error)
-                        log("本地播放失败 ${error.errorCodeName}: $friendly")
-                        _state.value = _state.value.copy(
-                            error = friendly,
-                            playing = false,
-                            buffering = false,
-                        )
+                    } else {
                         stopTicker()
                     }
-                })
-                // 软解路径没有 MediaCodec 的 video-debug-dec 统计，只能自己数丢帧
-                p.addAnalyticsListener(object : AnalyticsListener {
-                    override fun onDroppedVideoFrames(
-                        eventTime: AnalyticsListener.EventTime,
-                        droppedFrames: Int,
-                        elapsedMs: Long,
-                    ) {
-                        droppedFramesTotal += droppedFrames
+                }
+                Player.STATE_ENDED -> {
+                    cancelBlackScreenWatchdog()
+                    _state.value = _state.value.copy(
+                        playing = false,
+                        completed = true,
+                        positionMs = _state.value.durationMs,
+                    )
+                    stopTicker()
+                }
+                Player.STATE_IDLE -> Unit
+            }
+        }
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (prepared) {
+                _state.value = _state.value.copy(playing = playWhenReady)
+                if (playWhenReady) {
+                    startTicker()
+                    if (!renderedFirstFrame && pendingSurface != null) {
+                        scheduleBlackScreenWatchdog()
                     }
-                })
-                p.setMediaItem(MediaItem.fromUri(uri))
-                p.prepare()
-                // 接着上次看：seek 放在 playWhenReady 之前，免得先闪一帧片头。
-                //
-                // **这一步故意用关键帧对齐（CLOSEST_SYNC）而不是默认的 EXACT**：
-                // EXACT 要"从前一个关键帧解到精确位置"，对长片/大文件是很重的一步；
-                // 播放线程干这种重活时握着 Media3 的内部锁，主线程那边的监听回调就会被钉住
-                // —— 实测在同一台机器上用 6.28GB 片源复现出主线程卡 1.9 秒（用户报的"退出时
-                // 界面在但点不动"）。差一个关键帧（通常几秒）对"接着看"无所谓。
-                // 第一帧出来之后立刻恢复 EXACT，进度条拖动精度不受影响。
-                if (resumeFrom > 0) {
-                    p.setSeekParameters(SeekParameters.CLOSEST_SYNC)
-                    runCatching { p.seekTo(resumeFrom) }
-                    _state.value = _state.value.copy(positionMs = resumeFrom)
-                }
-                if (autoPlay) {
-                    p.playWhenReady = true
                 } else {
-                    _state.value = _state.value.copy(playing = false, buffering = false)
+                    stopTicker()
+                    cancelBlackScreenWatchdog()
                 }
-            } catch (e: Throwable) {
-                log("本地播放加载失败: ${e.message}")
-                _state.value = _state.value.copy(error = e.message ?: "加载失败", buffering = false)
-                releaseInternal()
             }
+        }
+
+        override fun onTracksChanged(tracks: Tracks) {
+            var foundVideo = false
+            var selectedVideo = false
+            for (group in tracks.groups) {
+                if (group.type == C.TRACK_TYPE_VIDEO) {
+                    foundVideo = true
+                    if (group.isSelected) selectedVideo = true
+                }
+            }
+            hasVideoTrack = foundVideo
+            if (foundVideo && !selectedVideo && !softwareFallbackAttempted) {
+                onLog("本地硬解未选中视频轨道，自动切换软件解码")
+                triggerSoftwareFallback()
+            }
+        }
+
+        override fun onVideoSizeChanged(videoSize: VideoSize) {
+            if (videoSize.width <= 0 || videoSize.height <= 0) return
+            val displayW = (videoSize.width * videoSize.pixelWidthHeightRatio).toInt().coerceAtLeast(1)
+            _state.value = _state.value.copy(width = displayW, height = videoSize.height)
+        }
+
+        override fun onRenderedFirstFrame() {
+            renderedFirstFrame = true
+            cancelBlackScreenWatchdog()
+            _state.value = _state.value.copy(buffering = false)
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            cancelBlackScreenWatchdog()
+            val isDecoderError = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED ||
+                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ||
+                error.errorCode == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED
+
+            if (isDecoderError && !softwareFallbackAttempted && currentUri != null) {
+                onLog("本地硬解异常 (${error.errorCodeName})，自动切换软件解码重试")
+                triggerSoftwareFallback()
+                return
+            }
+
+            val msg = "无法播放此视频（${error.errorCodeName}）"
+            onLog(msg)
+            _state.value = _state.value.copy(error = msg, playing = false, buffering = false)
         }
     }
 
-    /**
-     * 变速播放（长按画面快进）。松手时调用方会传回 1.0。
-     *
-     * ExoPlayer 的 `setPlaybackSpeed` 音视频一起变速（音高由 Sonic 处理）；
-     * libVLC 的 `rate` 在部分解封装器上只作用于视频轨甚至被忽略 —— 这是 libVLC 的行为，
-     * 走兜底内核的片源（WMV/RMVB 等）可能只有画面变快。
-     */
-    fun setSpeed(rate: Float) {
-        val target = rate.coerceIn(MIN_RATE, MAX_RATE)
-        handler.post {
-            val vlc = vlcPlayer
-            if (vlc != null) {
-                runCatching { vlc.rate = target }
-                log("变速: ${target}×（libVLC 内核）")
-                return@post
+    private fun scheduleBlackScreenWatchdog() {
+        cancelBlackScreenWatchdog()
+        if (softwareFallbackAttempted || renderedFirstFrame) return
+        val r = Runnable {
+            val p = player ?: return@Runnable
+            if (renderedFirstFrame || softwareFallbackAttempted) return@Runnable
+            if (pendingSurface == null || !p.playWhenReady || p.playbackState != Player.STATE_READY) return@Runnable
+            if (hasVideoTrack || _state.value.width == 0) {
+                onLog("本地播放无画面输出，自动切换软件解码重试")
+                triggerSoftwareFallback()
             }
-            runCatching { player?.setPlaybackSpeed(target) }
-            log("变速: ${target}×")
         }
+        blackScreenWatchdog = r
+        main.postDelayed(r, BLACK_SCREEN_WATCHDOG_MS)
     }
 
-    /**
-     * 继续播放（不重新加载）。**投送结束后手机上"接着播"用的就是它** ——
-     * 与 [play] 的区别是：不换片源、不重置进度，只把暂停中的播放器放开。
-     */
-    fun resume() {
-        handler.post {
-            // 投送中换集那一次是"只加载不播放"，当时没起看门狗；现在真播了，把这一课补上
-            if (!firstFrameRendered) scheduleWatchdog(NO_FRAME_FALLBACK_MS)
-            val vlc = vlcPlayer
-            if (vlc != null) {
-                runCatching { vlc.play() }
-                _state.value = _state.value.copy(playing = true)
-                startTicker()
-                return@post
-            }
-            val p = player ?: return@post
-            p.play()
-            _state.value = _state.value.copy(playing = true)
-            startTicker()
-        }
+    private fun cancelBlackScreenWatchdog() {
+        blackScreenWatchdog?.let { main.removeCallbacks(it) }
+        blackScreenWatchdog = null
+    }
+
+    private fun triggerSoftwareFallback() {
+        val uri = currentUri ?: return
+        if (softwareFallbackAttempted) return
+        softwareFallbackAttempted = true
+        val resumePos = player?.currentPosition?.coerceAtLeast(0L) ?: _state.value.positionMs
+        prepared = false
+        _state.value = _state.value.copy(buffering = true)
+        startPlaybackInternal(uri = uri, startPositionMs = resumePos, preferSoftwareVideo = true)
     }
 
     fun toggle() {
-        handler.post {
-            if (vlcPlayer != null) {
-                toggleVlc()
-                return@post
-            }
+        main.post {
             val p = player ?: return@post
-            if (p.isPlaying) {
-                p.pause()
+            if (!prepared) return@post
+            if (p.playWhenReady && p.playbackState != Player.STATE_ENDED) {
+                p.playWhenReady = false
                 _state.value = _state.value.copy(playing = false)
                 stopTicker()
             } else {
-                p.play()
-                _state.value = _state.value.copy(playing = true)
+                if (_state.value.completed || p.playbackState == Player.STATE_ENDED) {
+                    p.seekTo(0L)
+                }
+                p.playWhenReady = true
+                _state.value = _state.value.copy(playing = true, completed = false)
                 startTicker()
             }
         }
@@ -465,495 +376,115 @@ class LocalVideoPlayer(
 
     /** 暂停（已经在暂停/未起播则什么都不做）。 */
     fun pause() {
-        handler.post {
-            vlcPlayer?.let { mp ->
-                if (mp.isPlaying) {
-                    runCatching { mp.pause() }
-                    _state.value = _state.value.copy(playing = false)
-                    stopTicker()
-                }
-                saveProgress()
-                return@post
-            }
+        main.post {
             val p = player ?: return@post
-            if (p.isPlaying) {
-                p.pause()
+            if (p.playWhenReady) {
+                p.playWhenReady = false
                 _state.value = _state.value.copy(playing = false)
                 stopTicker()
             }
-            saveProgress()
         }
     }
 
     fun seekTo(positionMs: Long) {
-        handler.post {
+        main.post {
+            val p = player
             val duration = _state.value.durationMs
             val target = if (duration > 0) positionMs.coerceIn(0, duration) else positionMs.coerceAtLeast(0)
-            vlcPlayer?.let { mp ->
-                runCatching { mp.time = target }
+            if (p == null || !prepared) {
+                pendingSeekMs = target
                 _state.value = _state.value.copy(positionMs = target)
                 return@post
             }
-            val p = player ?: return@post
-            runCatching { p.seekTo(target) }
-            _state.value = _state.value.copy(positionMs = target)
+            p.seekTo(target)
+            _state.value = _state.value.copy(positionMs = target, completed = false)
+        }
+    }
+
+    fun seekBy(deltaMs: Long) {
+        seekTo(_state.value.positionMs + deltaMs)
+    }
+
+    fun setSpeed(speed: Float) {
+        val clamped = speed.coerceIn(0.5f, 3.0f)
+        main.post {
+            desiredSpeed = clamped
+            _state.value = _state.value.copy(speed = clamped)
+            player?.playbackParameters = PlaybackParameters(clamped)
         }
     }
 
     fun release() {
-        handler.post {
-            releaseInternal()
-            // libVLC 实例是进程级共享的（VlcHolder），这里**不能**放掉它 ——
-            // 列表页的媒体信息探测和缩略图抽帧还在用它。
+        main.post {
+            cancelBlackScreenWatchdog()
+            stopTicker()
+            currentUri = null
+            releasePlayerOnly()
             _state.value = LocalPlaybackState()
         }
     }
 
-    private fun releaseInternal() {
-        // 退出播放页 / 换片源 / 出错收尾：把进度记下来（saveProgress 内部丢后台线程，不占主线程）
-        saveProgress()
-        val tReleased = System.currentTimeMillis()
-        stopTicker()
-        cancelWatchdog()
-        cancelVlcWatchdog()
-        firstFrameRendered = false
-        fallbackStage = 0
-        vlcTried = false
-        vlcFirstVout = false
-        vlcVoutRetry = 0
-        droppedFramesTotal = 0
-        droppedFramesLogged = 0
-        runCatching { player?.setVideoSurface(null) }
-        // 必须在 release 之前 detach
-        runCatching { decoderManager?.detach() }
-        decoderManager = null
-        runCatching { player?.release() }
+    private fun releasePlayerOnly() {
+        prepared = false
+        surfaceBound = false
+        player?.let { p ->
+            runCatching { p.removeListener(playerListener) }
+            runCatching { p.setVideoSurface(null) }
+            runCatching { p.release() }
+        }
         player = null
-
-        // libVLC 兜底内核：detach -> stop -> release；LibVLC 实例本身留着重用（创建很贵）
-        vlcPlayer?.let { mp ->
-            runCatching { mp.vlcVout.detachViews() }
-            runCatching { mp.setEventListener(null) }
-            runCatching { mp.stop() }
-            runCatching { mp.detachViews() }
-            runCatching { mp.release() }
-        }
-        vlcPlayer = null
-
-        runCatching { vlcFd?.close() }
-        vlcFd = null
-        // 释放是**同步跑在主线程**上的（ExoPlayer 要求同一 Looper），这段时间界面不响应，
-        // 用户感知就是"退出时卡一下"。帧统计看不到主线程阻塞，所以这里留一条耗时日志 ——
-        // 但只在真的卡了（>50ms）时打，平时不刷日志。
-        val cost = System.currentTimeMillis() - tReleased
-        if (cost > 50) log("释放偏慢：${cost}ms（存进度已丢后台）")
-    }
-
-    // ------------------------------------------------------------------
-    // libVLC 兜底内核实现
-    // ------------------------------------------------------------------
-
-    private fun isHandoffError(error: PlaybackException): Boolean = when (error.errorCode) {
-        PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
-        PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED,
-        PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
-        PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
-        PlaybackException.ERROR_CODE_DECODING_FAILED,
-        PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
-        -> true
-
-        else -> false
-    }
-
-    /** ExoPlayer 处理不了时切到 libVLC，从当前进度接着播。 */
-    private fun switchToVlc(uri: Uri, title: String, startMs: Long) {
-        cancelWatchdog()
-        stopTicker()
-        vlcFirstVout = false
-        vlcVoutRetry = 0
-        // 拆掉 ExoPlayer 这一套
-        runCatching { decoderManager?.detach() }
-        decoderManager = null
-        runCatching { player?.setVideoSurface(null) }
-        runCatching { player?.release() }
-        player = null
-
-        val vlc = VlcHolder.get(context) ?: run {
-            log("libVLC 初始化失败")
-            _state.value = _state.value.copy(error = "本机无法播放该视频", buffering = false)
-            return
-        }
-        val mp = try {
-            VlcMediaPlayer(vlc)
-        } catch (e: Throwable) {
-            log("libVLC 播放器创建失败: ${e.message}")
-            _state.value = _state.value.copy(error = "本机无法播放该视频", buffering = false)
-            return
-        }
-        vlcPlayer = mp
-        mp.setEventListener { event -> onVlcEvent(event) }
-
-        val media = try {
-            openVlcMedia(vlc, uri)
-        } catch (e: Throwable) {
-            log("libVLC 打不开片源: ${e.message}")
-            _state.value = _state.value.copy(error = "本机无法播放该视频", buffering = false)
-            return
-        }
-        if (media == null) {
-            log("libVLC 打不开片源（拿不到可读句柄）")
-            _state.value = _state.value.copy(error = "本机无法播放该视频", buffering = false)
-            return
-        }
-        // 硬件解码优先；WMV3/VC-1 没有硬解时 libVLC 会自己回落软解
-        runCatching { media.setHWDecoderEnabled(true, false) }
-        mp.media = media
-        media.release()
-
-        val vout = mp.vlcVout
-        surface?.let { runCatching { vout.setVideoSurface(it, surfaceHolder) } }
-        runCatching { vout.attachViews() }
-        // libVLC 的 vout 必须知道渲染区域真实像素尺寸，给大了画面会被裁到只剩黑边
-        applyVlcWindowSize(vout)
-        _state.value = _state.value.copy(buffering = true, playing = false, title = title)
-        mp.play()
-        if (startMs > 0) runCatching { mp.time = startMs }
-        log("已切到 libVLC 兜底播放")
-        scheduleVlcWatchdog(VLC_NO_VOUT_RETRY_MS)
-        startTicker()
-    }
-
-    /**
-     * 「libVLC 起播了但一直不出画」的看门狗。
-     *
-     * 这不是理论问题：实测同一份片源同一台机器，4 次里有 1 次 libVLC 日志显示
-     * `Received first picture`、vout 也建好了，但屏幕上就是全黑 —— 典型的
-     * 「vout 挂到了一个已经失效的渲染面」。重挂一次就好，所以这里主动重挂一次再判死。
-     */
-    private fun scheduleVlcWatchdog(delayMs: Long) {
-        cancelVlcWatchdog()
-        val r = object : Runnable {
-            override fun run() {
-                vlcWatchdog = null
-                val mp = vlcPlayer ?: return
-                if (vlcFirstVout) return
-                if (_state.value.playing.not()) {
-                    // 还没真正起播（缓冲中），给它时间
-                    scheduleVlcWatchdog(2000L)
-                    return
-                }
-                val s = surface
-                if (vlcVoutRetry == 0 && s != null) {
-                    vlcVoutRetry = 1
-                    log("libVLC 起播后没有出画，重新挂一次渲染面")
-                    runCatching { mp.vlcVout.detachViews() }
-                    runCatching { mp.vlcVout.setVideoSurface(s, surfaceHolder) }
-                    runCatching { mp.vlcVout.attachViews() }
-                    applyVlcWindowSize(mp.vlcVout)
-                    scheduleVlcWatchdog(VLC_NO_VOUT_GIVEUP_MS)
-                    return
-                }
-                // 只有确认**确实有视频轨**才敢判死；纯音频片源本来就不会有 Vout
-                val track = runCatching { mp.currentVideoTrack }.getOrNull()
-                if (track != null && track.width > 0) {
-                    log("libVLC 重挂渲染面后仍然没有画面")
-                    _state.value = _state.value.copy(
-                        error = "本机无法播放该视频",
-                        playing = false,
-                        buffering = false,
-                    )
-                    stopTicker()
-                }
-            }
-        }
-        vlcWatchdog = r
-        handler.postDelayed(r, delayMs)
-    }
-
-    private fun cancelVlcWatchdog() {
-        vlcWatchdog?.let { handler.removeCallbacks(it) }
-        vlcWatchdog = null
-    }
-
-    /**
-     * 把 MediaStore 的 `content://` 变成 libVLC 打得开的片源。
-     *
-     * libVLC 的 access 模块里**没有** `content` 这一项（实测日志：
-     * `stream: looking for access module matching "content": 25 candidates` → `no access modules matched`），
-     * 所以不能直接把 `content://` 丢给它。改成先向 ContentResolver 要一个文件句柄，
-     * 用 fd 建 Media（libVLC 自己会 dup 这个 fd），句柄留到播放结束再关。
-     */
-    private fun openVlcMedia(vlc: LibVLC, uri: Uri): Media? {
-        if (uri.scheme != "content") return Media(vlc, uri)
-        val pfd = context.contentResolver.openFileDescriptor(uri, "r") ?: return null
-        vlcFd = pfd
-        return Media(vlc, pfd.fileDescriptor)
-    }
-
-    private fun onVlcEvent(event: VlcMediaPlayer.Event) {
-        val mp = vlcPlayer ?: return
-        when (event.type) {
-            VlcMediaPlayer.Event.Playing -> {
-                _state.value = _state.value.copy(playing = true, buffering = false)
-                syncVlcVideoSize(mp)
-                log("libVLC 已开始播放")
-            }
-
-            VlcMediaPlayer.Event.Paused ->
-                _state.value = _state.value.copy(playing = false)
-
-            VlcMediaPlayer.Event.Buffering ->
-                _state.value = _state.value.copy(buffering = event.buffering < 100f)
-
-            VlcMediaPlayer.Event.LengthChanged ->
-                _state.value = _state.value.copy(durationMs = mp.length.coerceAtLeast(0))
-
-            VlcMediaPlayer.Event.Vout -> {
-                vlcFirstVout = true
-                cancelVlcWatchdog()
-                syncVlcVideoSize(mp)
-                log(
-                    "libVLC 出画: 轨道=${mp.currentVideoTrack?.width}x${mp.currentVideoTrack?.height}" +
-                        " attached=${runCatching { mp.vlcVout.areViewsAttached() }.getOrDefault(false)}" +
-                        " surfaceValid=${surface?.isValid}"
-                )
-            }
-
-            VlcMediaPlayer.Event.EndReached -> {
-                log("libVLC 播放结束")
-                reachedEnd = true
-                stopTicker()
-                cancelWatchdog()
-                cancelVlcWatchdog()
-                _state.value = _state.value.copy(
-                    playing = false,
-                    buffering = false,
-                    positionMs = _state.value.durationMs,
-                )
-                // 看完了：清掉"下次接着看"的进度
-                _state.value.uri?.let { PlaybackProgress.clear(context, it) }
-            }
-
-            VlcMediaPlayer.Event.EncounteredError -> {
-                log("libVLC 播放失败")
-                cancelVlcWatchdog()
-                _state.value = _state.value.copy(
-                    error = "本机无法播放该视频",
-                    playing = false,
-                    buffering = false,
-                )
-                stopTicker()
-            }
-        }
-    }
-
-    private fun syncVlcVideoSize(mp: VlcMediaPlayer) {
-        val track = runCatching { mp.currentVideoTrack }.getOrNull() ?: return
-        if (track.width > 0 && track.height > 0) {
-            _state.value = _state.value.copy(width = track.width, height = track.height)
-        }
-    }
-
-    /**
-     * libVLC 的 vout 必须知道目标窗口尺寸，而且这个尺寸得**等于渲染面的真实像素尺寸**。
-     * 给大了不会报错：libVLC 照样解码、照样出画，只是把画面按更大的画布居中排版，
-     * 而 SurfaceView 只显示其中一块 —— 结果就是「进度在走、日志说收到画面、屏幕全黑」。
-     */
-    private fun applyVlcWindowSize(vout: IVLCVout) {
-        val dm = context.resources.displayMetrics
-        var w = dm.widthPixels
-        var h = dm.heightPixels
-        val holder = surfaceHolder
-        if (holder != null) {
-            val f = runCatching { holder.surfaceFrame }.getOrNull()
-            if (f != null && f.width() > 0 && f.height() > 0) {
-                w = f.width()
-                h = f.height()
-            }
-        }
-        runCatching { vout.setWindowSize(w, h) }
-        log("libVLC 渲染窗口 ${w}x${h}")
-    }
-
-    private fun toggleVlc() {
-        val mp = vlcPlayer ?: return
-        if (mp.isPlaying) {
-            runCatching { mp.pause() }
-            _state.value = _state.value.copy(playing = false)
-            stopTicker()
-        } else {
-            runCatching { mp.play() }
-            _state.value = _state.value.copy(playing = true)
-            startTicker()
-        }
-    }
-
-    /**
-     * 「起播了但一直没画面」的看门狗。
-     *
-     * 硬解器吃不下某些码流时**不会报错**，只是静默丢弃 buffer（1080i MBAFF 实测就是
-     * `MediaCodec discarded an unknown buffer`），而 Media3 的 `AUTO` 只在"格式不被支持"
-     * 时兜底，管不到这种运行期失败。
-     */
-    private fun scheduleWatchdog(delayMs: Long) {
-        cancelWatchdog()
-        val r = object : Runnable {
-            override fun run() {
-                watchdog = null
-                val p = player ?: return
-                if (firstFrameRendered) return
-                if (p.playbackState != Player.STATE_READY) {
-                    scheduleWatchdog(NO_FRAME_FALLBACK_MS)
-                    return
-                }
-                if (fallbackStage == 0) {
-                    fallbackStage = 1
-                    log("硬解 ${NO_FRAME_FALLBACK_MS / 1000} 秒内没出画面，切换 FFmpeg 软解重试")
-                    runCatching { decoderManager?.selectVideoDecoder(DecoderMode.FFMPEG) }
-                        .onFailure { log("切换 FFmpeg 失败: ${it.message}") }
-                    scheduleWatchdog(NO_FRAME_GIVEUP_MS)
-                } else {
-                    log("FFmpeg 软解仍然没有画面，判定本机解不了这个片源")
-                    _state.value = _state.value.copy(
-                        error = "本机解不了这个视频（硬解软解都失败）",
-                        playing = false,
-                        buffering = false,
-                    )
-                    stopTicker()
-                }
-            }
-        }
-        watchdog = r
-        handler.postDelayed(r, delayMs)
-    }
-
-    private fun cancelWatchdog() {
-        watchdog?.let { handler.removeCallbacks(it) }
-        watchdog = null
-    }
-
-    /** 当前实际生效的解码类别；未知/还没初始化时返回 null。 */
-    private fun activeVideoMode(): DecoderMode? =
-        runCatching { decoderManager?.activeVideoMode }.getOrNull()
-
-    private fun decoderModeLabel(): String = when (activeVideoMode()) {
-        DecoderMode.HARDWARE -> "硬解"
-        DecoderMode.SOFTWARE -> "系统软解"
-        DecoderMode.FFMPEG -> "FFmpeg 软解"
-        DecoderMode.AUTO -> "自动"
-        null -> if (fallbackStage > 0) "FFmpeg 软解（回退）" else "未知解码器"
     }
 
     private fun startTicker() {
         stopTicker()
-        var ticks = 0L
         val r = object : Runnable {
             override fun run() {
-                ticks++
-                val vlc = vlcPlayer
-                if (vlc != null) {
-                    runCatching {
-                        _state.value = _state.value.copy(
-                            positionMs = vlc.time.coerceAtLeast(0),
-                            durationMs = vlc.length.takeIf { it > 0 } ?: _state.value.durationMs,
-                        )
-                    }
-                }
-                val p = player
-                if (p != null) {
-                    runCatching {
-                        _state.value = _state.value.copy(
-                            positionMs = p.currentPosition.coerceAtLeast(0),
-                            durationMs = p.duration.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0)
-                                ?: _state.value.durationMs,
-                        )
-                    }
-                    // 每 5 秒把新增丢帧报一次（只在真丢了才报）
-                    if (ticks % (DROP_REPORT_MS / TICK_MS) == 0L && droppedFramesTotal > droppedFramesLogged) {
-                        val delta = droppedFramesTotal - droppedFramesLogged
-                        droppedFramesLogged = droppedFramesTotal
-                        log("解码跟不上：最近 5 秒丢 $delta 帧（累计 $droppedFramesTotal，${decoderModeLabel()}）")
-                    }
-                }
-                // 每 5 秒记一次播放进度：中途被杀/断电也不会丢掉太多
-                if (ticks % (PROGRESS_SAVE_MS / TICK_MS) == 0L) saveProgress()
-                handler.postDelayed(this, TICK_MS)
+                val p = player ?: return
+                val rawDur = p.duration
+                val dur = if (rawDur != C.TIME_UNSET && rawDur > 0L) rawDur else _state.value.durationMs
+                _state.value = _state.value.copy(
+                    positionMs = p.currentPosition.coerceAtLeast(0L),
+                    durationMs = dur,
+                )
+                main.postDelayed(this, TICK_MS)
             }
         }
         ticker = r
-        handler.postDelayed(r, TICK_MS)
-    }
-
-    /**
-     * 把当前进度写进"下次接着看"的记录（没有片源或还没起播时什么都不做）。
-     *
-     * **落盘一律在后台线程**：这个方法会在主线程被调（ticker / 暂停 / 退出收尾），
-     * 而退出那条路上一毫秒都不该花在 I/O 上 —— 用户感知就是"退出时卡一下"。
-     */
-    private fun saveProgress() {
-        val s = _state.value
-        val uri = s.uri ?: return
-        if (s.positionMs <= 0) return
-        // **真播完了就别再记**：否则下次打开会停在结尾、"接着播"等于直接结束。
-        // 判定用播放器自己的结束事件（reachedEnd），不拿"离片尾还有多远"去猜 ——
-        // 差 20 秒看完就退出，那个进度是要留着的。
-        if (reachedEnd) return
-        val pos = s.positionMs
-        val dur = s.durationMs
-        runCatching { saveExecutor.execute { PlaybackProgress.save(context, uri, pos, dur) } }
+        main.postDelayed(r, TICK_MS)
     }
 
     private fun stopTicker() {
-        ticker?.let { handler.removeCallbacks(it) }
+        ticker?.let { main.removeCallbacks(it) }
         ticker = null
     }
 
-    /**
-     * 把 ExoPlayer 的错误码翻译成用户看得懂的一句话。
-     * 直接显示 `ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED` 这种对用户没有意义。
-     */
-    private fun friendlyMessage(error: PlaybackException): String = when (error.errorCode) {
-        PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
-        PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED,
-        -> "这个容器格式本机播不了（如 WMV/ASF）"
-
-        PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
-        PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
-        PlaybackException.ERROR_CODE_DECODING_FAILED,
-        PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
-        -> "本机没有能解这个视频的编码器"
-
-        PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
-        PlaybackException.ERROR_CODE_IO_NO_PERMISSION,
-        -> "读不到这个文件（可能已被移动或没有权限）"
-
-        else -> "播放失败（${error.errorCodeName}）"
+    private object SoftwarePreferredCodecSelector : MediaCodecSelector {
+        override fun getDecoderInfos(
+            mimeType: String,
+            requiresSecureDecoder: Boolean,
+            requiresTunnelingDecoder: Boolean,
+        ): MutableList<MediaCodecInfo> {
+            val all = MediaCodecSelector.DEFAULT.getDecoderInfos(
+                mimeType,
+                requiresSecureDecoder,
+                requiresTunnelingDecoder,
+            )
+            if (!mimeType.startsWith("video/")) return all.toMutableList()
+            val sw = mutableListOf<MediaCodecInfo>()
+            val hw = mutableListOf<MediaCodecInfo>()
+            for (info in all) {
+                val lower = info.name.lowercase()
+                val isSw = info.softwareOnly ||
+                    lower.startsWith("c2.android.") ||
+                    lower.startsWith("omx.google.")
+                if (isSw) sw += info else hw += info
+            }
+            return (sw + hw).toMutableList()
+        }
     }
 
     private companion object {
-        const val TAG = "LocalVideoPlayer"
-        const val TICK_MS = 500L
-
-        /** 每隔多久把新增丢帧汇总报一次。 */
-        const val DROP_REPORT_MS = 5000L
-
-        /** 每隔多久把播放进度写进"下次接着看"的记录。 */
-        const val PROGRESS_SAVE_MS = 5000L
-
-        /** 起播后多久还没渲染出第一帧就判定硬解器吃不下（要留出起播缓冲的余量）。 */
-        const val NO_FRAME_FALLBACK_MS = 4000L
-
-        /** 切到 FFmpeg 之后再等多久还没画面就放弃（软解起播比硬解慢）。 */
-        const val NO_FRAME_GIVEUP_MS = 8000L
-
-        /** libVLC 起播后多久还没出画就重挂一次渲染面。 */
-        const val VLC_NO_VOUT_RETRY_MS = 6000L
-
-        /** 重挂渲染面之后再等多久还没画面就判定放不出来。 */
-        const val VLC_NO_VOUT_GIVEUP_MS = 6000L
-
-        /** 变速允许的范围：长按快进用得到 3×，留点余量；低于 0.25× 基本等于暂停。 */
-        const val MIN_RATE = 0.25f
-        const val MAX_RATE = 4.0f
+        const val TICK_MS = 350L
+        const val BLACK_SCREEN_WATCHDOG_MS = 2_800L
     }
 }

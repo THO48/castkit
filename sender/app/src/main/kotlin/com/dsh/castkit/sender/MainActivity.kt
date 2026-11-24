@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.content.ContextCompat
@@ -25,8 +26,7 @@ import com.dsh.castkit.sender.ui.MainScreen
 class MainActivity : ComponentActivity() {
 
     /**
-     * 设备发现提升到 Activity 级：投屏页和播放页的「快捷投屏」弹窗都要能看到同一份设备列表，
-     * 不能只在某一个页面里跑。
+     * 设备发现提升到 Activity 级：投屏页和播放页的「快捷投屏」弹窗共用同一份设备列表。
      */
     private val discovery by lazy { LanCastDiscovery(this) }
 
@@ -43,6 +43,20 @@ class MainActivity : ComponentActivity() {
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
+    private var pendingStartMirrorAfterAudio = false
+
+    private val audioPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (!granted) {
+                Prefs.setMirrorAudio(this, false)
+                toast(getString(R.string.err_audio_permission_fallback))
+            }
+            if (pendingStartMirrorAfterAudio) {
+                pendingStartMirrorAfterAudio = false
+                launchScreenCapture()
+            }
+        }
+
     private val captureConsent =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val data = result.data
@@ -56,7 +70,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    /** 选中的待投视频（SAF）。 */
+    /** 选中的待投视频（SAF 或视频库）。 */
     private val pickedVideo = mutableStateOf<Uri?>(null)
 
     private val pickVideo = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -69,28 +83,78 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         askNotificationPermission()
         setContent {
             CastKitTheme {
                 MainScreen(
                     initial = Prefs.config(this),
+                    pickedVideo = pickedVideo.value,
                     onPickVideo = { pickVideo.launch(arrayOf("video/*")) },
                     onPickVideoUri = { pickedVideo.value = it },
-                    onQuickCast = { uri, host, port, positionMs ->
-                        // 弹窗里点设备名即开投：记下目标地址，其余设置不动；带上本机进度接着播
-                        Prefs.setTarget(this, host, port, auto = true)
-                        VideoCastService.start(this, uri, host, port, positionMs)
+                    onStartVideo = { uri ->
+                        val resumeMs = Prefs.getVideoProgress(this, uri.toString())
+                        VideoCastService.start(
+                            this,
+                            uri,
+                            Prefs.host(this),
+                            Prefs.port(this),
+                            startPositionMs = resumeMs,
+                            targetName = Prefs.targetName(this),
+                        )
                     },
-                    // 投送中点「上一个/下一个」：换片但**不结束投送**，接收端在同一会话里改播新片
-                    onSwitchVideo = { uri -> VideoCastService.switchTo(this, uri) },
+                    onShareLibrary = {
+                        VideoCastService.startLibrary(
+                            this,
+                            Prefs.host(this),
+                            Prefs.port(this),
+                            targetName = Prefs.targetName(this),
+                        )
+                    },
+                    onQuickCast = { uri, host, port, name, positionMs ->
+                        Prefs.setTarget(this, host, port, name = name, auto = true)
+                        VideoCastService.start(
+                            this,
+                            uri,
+                            host,
+                            port,
+                            startPositionMs = positionMs,
+                            targetName = name,
+                        )
+                    },
                     onRemoteToggle = { VideoCastService.control(this, LanCast.ACTION_TOGGLE) },
                     onRemoteSeek = { ms -> VideoCastService.control(this, LanCast.ACTION_SEEK, ms) },
+                    onRemoteSeekBy = { deltaMs ->
+                        if (deltaMs >= 0) {
+                            VideoCastService.control(this, LanCast.ACTION_SEEK_FORWARD, deltaMs)
+                        } else {
+                            VideoCastService.control(this, LanCast.ACTION_SEEK_BACKWARD, -deltaMs)
+                        }
+                    },
+                    onRemoteSpeed = { speed ->
+                        VideoCastService.control(this, LanCast.ACTION_SPEED, (speed * 100f).toLong())
+                    },
+                    onRemoteVolumeDelta = { up ->
+                        VideoCastService.control(this, LanCast.ACTION_VOLUME_DELTA, if (up) 1L else 0L)
+                    },
                     onStopVideo = { VideoCastService.stop(this) },
                     onStart = ::requestCast,
                     onStop = { CastService.stop(this) },
+                    onRequestKeyFrame = { CastService.requestKeyFrame(this) },
+                    onUpdateBitrate = { mbps -> CastService.updateBitrate(this, mbps * 1_000_000) },
+                    onRequestAudioPermission = ::requestAudioPermissionOnly,
                     discovery = discovery,
                 )
             }
+        }
+    }
+
+    private fun requestAudioPermissionOnly() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingStartMirrorAfterAudio = false
+            audioPermission.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
@@ -101,6 +165,17 @@ class MainActivity : ComponentActivity() {
             toast(getString(R.string.err_bad_address))
             return
         }
+        if (cfg.audio && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingStartMirrorAfterAudio = true
+            audioPermission.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        launchScreenCapture()
+    }
+
+    private fun launchScreenCapture() {
         val mgr = getSystemService(MediaProjectionManager::class.java)
         captureConsent.launch(mgr.createScreenCaptureIntent())
     }

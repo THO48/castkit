@@ -38,9 +38,11 @@ class CastService : Service() {
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var encoder: ScreenEncoder? = null
+    private var audioEncoder: AudioCaptureEncoder? = null
     private var client: LanCastClient? = null
     private var config: CastConfig? = null
     private var csd: ByteArray? = null
+    @Volatile private var audioCsd: ByteArray? = null
     private var stoppedByUser = false
     private val bytesSent = AtomicLong(0)
     private var displayListener: DisplayManager.DisplayListener? = null
@@ -78,6 +80,17 @@ class CastService : Service() {
                 stoppedByUser = true
                 teardown("已停止")
                 stopSelf()
+            }
+            ACTION_REQUEST_KEYFRAME -> {
+                encoder?.requestKeyFrame()
+            }
+            ACTION_UPDATE_BITRATE -> {
+                val bps = intent.getIntExtra(EXTRA_BITRATE_BPS, 0)
+                if (bps > 0) {
+                    encoder?.updateBitrate(bps)
+                    config = config?.copy(bitrateBps = bps)
+                    CastBus.update { it.copy(bitrateBps = bps) }
+                }
             }
             ACTION_START -> {
                 val cfg = Prefs.config(this)
@@ -139,10 +152,12 @@ class CastService : Service() {
 
         config = cfg
         csd = null
+        audioCsd = null
         bytesSent.set(0)
         framesSent.set(0)
         connectAttempt = 0
         autoRebuilds.set(0)
+        Prefs.rememberReceiver(this, cfg.targetName, cfg.host, cfg.port)
         CastBus.update {
             it.copy(
                 phase = CastPhase.CONNECTING,
@@ -150,10 +165,13 @@ class CastService : Service() {
                 message = "",
                 host = cfg.host,
                 port = cfg.port,
+                targetName = cfg.targetName,
                 width = cfg.width,
                 height = cfg.height,
                 fps = cfg.fps,
                 bitrateBps = cfg.bitrateBps,
+                audioActive = false,
+                startedAtMs = 0L,
             )
         }
 
@@ -203,40 +221,65 @@ class CastService : Service() {
             null,
         )
 
+        // 可选：同步采集系统音频（Android 10+ AudioPlaybackCapture）
+        var audioStarted = false
+        if (effective.audio) {
+            val aEnc = AudioCaptureEncoder(
+                context = this,
+                projection = proj,
+                onCsd = { bytes -> onAudioCsd(bytes) },
+                onFrame = { data, off, len, ptsUs -> onAudioFrame(data, off, len, ptsUs) },
+            )
+            if (aEnc.start()) {
+                audioEncoder = aEnc
+                audioStarted = true
+            }
+        }
+        val finalCfg = effective.copy(audio = audioStarted)
+        config = finalCfg
+        CastBus.update { it.copy(audioActive = audioStarted) }
+
         startDisplayListener()
-        // 用 effective（可能已按屏幕尺寸回退）而不是原始 cfg：否则握手里报的尺寸和真实流不一致，
-        // 接收端会按错误尺寸建解码器
-        connect(effective)
+        // 用 finalCfg（可能已按屏幕尺寸回退 / 音频状态已确定）而不是原始 cfg
+        connect(finalCfg)
         startStatsLoop()
     }
 
-    /**
-     * 连接入口：**永远**派发到后台线程。
-     *
-     * `Socket.connect` 是阻塞调用，而本方法的上游 [startCast] 是从 `onStartCommand`
-     * 进来的，也就是**主线程**。这里曾经直接同步连接，于是必然抛
-     * `NetworkOnMainThreadException`，再被下面的 catch 当成"连接丢失"交给
-     * [onConnectionLost] 的重连线程——1 秒后才真正连上。
-     *
-     * 功能上属于"歪打正着"，代价有三个：日志里一句假的"连接失败"、
-     * UI 白闪一下"第 1 次重连"、以及测速窗口里空转的一秒
-     * （状态卡上 `实测 0.0 Mbps` 的来源之一）。更糟的是它每次投屏都会
-     * 白白消耗一格重连预算。
-     */
-    private fun connect(cfg: CastConfig) {
-        Thread({ connectBlocking(cfg) }, "lancast-connect").apply { isDaemon = true }.start()
+    private fun onAudioCsd(bytes: ByteArray) {
+        audioCsd = bytes
+        val c = client ?: return
+        if (!c.isConnected()) return
+        runCatching { c.sendFrame(LanCast.TYPE_AUDIO_CSD, 0, 0L, bytes, 0, bytes.size) }
     }
 
-    /** 真正的阻塞连接逻辑。**只能在后台线程调用。** */
-    private fun connectBlocking(cfg: CastConfig) {
+    private fun onAudioFrame(data: ByteArray, offset: Int, length: Int, ptsUs: Long) {
+        val c = client ?: return
+        if (!c.isConnected()) return
+        runCatching {
+            c.sendFrame(LanCast.TYPE_AUDIO_AU, 0, ptsUs, data, offset, length)
+            bytesSent.addAndGet(length.toLong())
+        }
+    }
+
+    private fun connect(cfg: CastConfig) {
         val c = LanCastClient(cfg.host, cfg.port)
         c.onControl = { control ->
             when (control) {
                 LanCast.CTRL_READY -> {
                     connectAttempt = 0
-                    CastBus.update { it.copy(phase = CastPhase.RUNNING, message = "") }
+                    val now = System.currentTimeMillis()
+                    CastBus.update {
+                        it.copy(
+                            phase = CastPhase.RUNNING,
+                            message = "",
+                            startedAtMs = if (it.startedAtMs > 0L) it.startedAtMs else now,
+                        )
+                    }
                     csd?.let { csdBytes ->
                         runCatching { c.sendFrame(LanCast.TYPE_VIDEO_CSD, 0, 0L, csdBytes, 0, csdBytes.size) }
+                    }
+                    audioCsd?.let { aBytes ->
+                        runCatching { c.sendFrame(LanCast.TYPE_AUDIO_CSD, 0, 0L, aBytes, 0, aBytes.size) }
                     }
                 }
                 LanCast.CTRL_REQUEST_KEYFRAME -> encoder?.requestKeyFrame()
@@ -273,8 +316,7 @@ class CastService : Service() {
             Thread.sleep(delayMs)
             val cfg = config
             if (!stoppedByUser && cfg != null && isCasting()) {
-                // 已经在后台线程上，直接走阻塞版本，不必再派发一次
-                connectBlocking(cfg)
+                connect(cfg)
             }
         }.apply { isDaemon = true }.start()
     }
@@ -511,6 +553,9 @@ class CastService : Service() {
     private fun teardown(reason: String) {
         stoppedByUser = stoppedByUser || reason == "已停止"
         stopDisplayListener()
+        runCatching { audioEncoder?.stop() }
+        audioEncoder = null
+        audioCsd = null
         runCatching { encoder?.stop() }
         encoder = null
         runCatching { virtualDisplay?.release() }
@@ -523,7 +568,18 @@ class CastService : Service() {
         csd = null
         val cur = CastBus.state.value
         if (cur.phase != CastPhase.ERROR) {
-            CastBus.update { it.copy(phase = CastPhase.IDLE, message = reason, measuredKbps = 0, measuredFps = 0f) }
+            CastBus.update {
+                it.copy(
+                    phase = CastPhase.IDLE,
+                    message = reason,
+                    measuredKbps = 0,
+                    measuredFps = 0f,
+                    audioActive = false,
+                    startedAtMs = 0L,
+                )
+            }
+        } else {
+            CastBus.update { it.copy(audioActive = false, startedAtMs = 0L) }
         }
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
     }
@@ -570,8 +626,11 @@ class CastService : Service() {
         private const val TAG = "CastService"
         const val ACTION_START = "com.dsh.castkit.sender.START"
         const val ACTION_STOP = "com.dsh.castkit.sender.STOP"
+        const val ACTION_REQUEST_KEYFRAME = "com.dsh.castkit.sender.REQUEST_KEYFRAME"
+        const val ACTION_UPDATE_BITRATE = "com.dsh.castkit.sender.UPDATE_BITRATE"
         const val EXTRA_RESULT_CODE = "resultCode"
         const val EXTRA_RESULT_DATA = "resultData"
+        const val EXTRA_BITRATE_BPS = "bitrateBps"
         private const val NOTIFICATION_ID = 4711
         private const val DEFAULT_DPI = 320
         private const val MAX_RECONNECT = 3
@@ -593,9 +652,25 @@ class CastService : Service() {
         }
 
         fun stop(context: Context) {
-            context.startService(
-                Intent(context, CastService::class.java).setAction(ACTION_STOP),
-            )
+            runCatching {
+                context.startService(Intent(context, CastService::class.java).setAction(ACTION_STOP))
+            }
+        }
+
+        fun requestKeyFrame(context: Context) {
+            runCatching {
+                context.startService(Intent(context, CastService::class.java).setAction(ACTION_REQUEST_KEYFRAME))
+            }
+        }
+
+        fun updateBitrate(context: Context, bitrateBps: Int) {
+            runCatching {
+                context.startService(
+                    Intent(context, CastService::class.java)
+                        .setAction(ACTION_UPDATE_BITRATE)
+                        .putExtra(EXTRA_BITRATE_BPS, bitrateBps),
+                )
+            }
         }
     }
 }

@@ -23,15 +23,13 @@ val castkitAbis: List<String> = (findProperty("castkitAbis") as String?)
     ?.takeIf { it.isNotEmpty() }
     ?: allAbis
 
-// build-tools 的版本不能按 os.name 硬编码：
-//   ① Windows 与 WSL/容器可能**共用同一个 SDK 目录**，而同一版本号在一侧是 Linux 可执行文件、
-//      另一侧是 Windows .exe（`35.0.0` 是 Linux、`36.0.0` 是 Windows 的机器上就是这样）；
-//   ② 一台机器上也常常只装了其中一个版本，另一个版本号会直接报
-//        Installed Build Tools revision 35.0.0 is corrupted
-//        Build-tool 35.0.0 is missing AAPT at ...\35.0.0\aapt.exe
-// 所以这里改成按「目录存在 + 当前平台对应的 aapt2 可执行文件存在」来挑，
-// 取版本号最高的那个；一个都没有就留空，让 AGP 用默认值并给出它自己的正常报错。
-// AGP 不认识 -Pandroid.buildToolsVersion 这种属性覆盖，只认这里的 DSL。与 sender 保持一致。
+val prebuiltNativeDir = file("src/main/prebuiltJniLibs")
+val usePrebuiltNative: Boolean =
+    (findProperty("castkitForceNativeBuild") as String?) != "true" &&
+        ((findProperty("castkitPrebuiltNative") as String?) == "true" ||
+            File(prebuiltNativeDir, "arm64-v8a/libairplay_native.so").exists())
+val effectiveAbis: List<String> = if (usePrebuiltNative) listOf("arm64-v8a") else castkitAbis
+
 val castkitBuildTools: String? = run {
     val sdkDir: File? = sequenceOf(
         localProps.getProperty("sdk.dir"),
@@ -58,9 +56,16 @@ val castkitBuildTools: String? = run {
 android {
     namespace = "io.github.jqssun.airplay"
     compileSdk = 36
+    castkitBuildTools?.let { buildToolsVersion = it }
     ndkVersion = "27.0.12077973"
 
-    castkitBuildTools?.let { buildToolsVersion = it }
+    if (usePrebuiltNative) {
+        sourceSets {
+            getByName("main") {
+                jniLibs.srcDir(prebuiltNativeDir)
+            }
+        }
+    }
 
     if (localProps.containsKey("storeFile")) {
         signingConfigs {
@@ -78,37 +83,41 @@ android {
         applicationId = "com.dsh.castkit.receiver"
         minSdk = 24
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 32
+        versionName = "0.0.32-castkit.2"
 
-        externalNativeBuild {
-            cmake {
-                arguments += "-DANDROID_STL=c++_shared"
-                arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
-                // CastKit: 指向 tools/build-native-deps.sh 预构建的 OpenSSL/FFmpeg
-                // （本机的嵌套 make 会死锁，故不用上游的 ExternalProject）
-                (findProperty("castkitDepsRoot") as String?)
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { arguments += "-DCASTKIT_DEPS_ROOT=$it" }
+        if (!usePrebuiltNative) {
+            externalNativeBuild {
+                cmake {
+                    arguments += "-DANDROID_STL=c++_shared"
+                    arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+                    // CastKit: 指向 tools/build-native-deps.sh 预构建的 OpenSSL/FFmpeg
+                    // （本机的嵌套 make 会死锁，故不用上游的 ExternalProject）
+                    (findProperty("castkitDepsRoot") as String?)
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { arguments += "-DCASTKIT_DEPS_ROOT=$it" }
+                }
             }
         }
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
+    if (!usePrebuiltNative) {
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+            }
         }
     }
 
     buildTypes {
         debug {
-            ndk { abiFilters += castkitAbis }
+            ndk { abiFilters += effectiveAbis }
         }
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfigs.findByName("release")?.let { signingConfig = it }
-            ndk { abiFilters += castkitAbis }
+            ndk { abiFilters += effectiveAbis }
         }
         // debuggable build with HWASan (arm64) + UBSan in native code
         create("sanitize") {
@@ -221,10 +230,6 @@ dependencies {
     implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.ui.compose.material3)
     implementation(libs.media3.transformer)
-    // CastKit: FFmpeg 软解（NextLib）—— 见 renderer/LanVideoPlayer.kt 顶部说明
-    implementation(libs.nextlib.media3ext)
-    // CastKit: libVLC 兜底内核 —— Media3 与 NextLib 都没有 ASF 解封装器，WMV/WMA 靠它
-    implementation(libs.libvlc)
     implementation(libs.kotlinx.coroutines)
     implementation(libs.oboe)
 

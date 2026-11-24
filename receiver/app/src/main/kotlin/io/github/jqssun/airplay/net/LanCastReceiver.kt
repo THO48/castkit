@@ -1,10 +1,7 @@
 package io.github.jqssun.airplay.net
 
 import android.media.MediaCodec
-import android.media.MediaCodecInfo
-import android.media.MediaCodecList
 import android.media.MediaFormat
-import android.os.Build
 import android.util.Log
 import android.view.Surface
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +21,7 @@ data class LanVideoStatus(
     val durationMs: Long,
     val playing: Boolean,
     val buffering: Boolean,
+    val browsing: Boolean = false,
 )
 
 /** 局域网投屏（LANCast v1）接收状态，供 UI 展示。 */
@@ -37,7 +35,9 @@ data class LanCastStatus(
     val fps: Int = 0,
     val requestedBitrateBps: Int = 0,
     val measuredKbps: Int = 0,
+    val measuredFps: Float = 0f,
     val frames: Long = 0,
+    val hasAudio: Boolean = false,
     val decoder: String = "",
     val error: String? = null,
 ) {
@@ -76,6 +76,10 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
     @Volatile
     var onSessionStarted: (() -> Unit)? = null
 
+    /** 发送端告知视频库 HTTP 基址（`http://ip:port`），接收端可随时拉取视频列表选片。 */
+    @Volatile
+    var onLibraryBase: ((String) -> Unit)? = null
+
     /** 发送端要求播放某个局域网视频地址（投视频文件模式）。 */
     @Volatile
     var onPlayUrl: ((String) -> Unit)? = null
@@ -83,6 +87,10 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
     /** 发送端要求结束投视频（用户点了停止）。 */
     @Volatile
     var onStopVideo: (() -> Unit)? = null
+
+    /** 会话结束回调（网络断开或被关闭时清理远程视频库状态）。 */
+    @Volatile
+    var onSessionEnded: (() -> Unit)? = null
 
     /** 发送端发来投屏控制（action, value）：投视频文件时发送端当遥控器用。 */
     @Volatile
@@ -160,31 +168,8 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
      */
     fun setSurface(s: Surface?) {
         if (surface === s) return
-        // 失效的 Surface **绝不能收**：SurfaceView 销毁后 SurfaceHolder 还会把同一个对象再报一次
-        // （surfaceChanged 晚于 surfaceDestroyed），收下来就是一个"有对象、没 native 句柄"的
-        // 死面 —— MediaCodec.configure 会以 nativeWindowConnect EINVAL 失败，看门狗每 2 秒
-        // 重试一次、永远失败，用户看到的就是一直黑屏/花屏。
-        if (s != null && !s.isValid) {
-            log("忽略失效的渲染面: ${s.hashCode()} valid=false")
-            return
-        }
-        // 打印 hash + isValid：真机上出现过「Surface 对象在、native 句柄已断」的情况，
-        // 表现是 MediaCodec.configure 里 nativeWindowConnect 返回 EINVAL，只打"格式不支持"会误导。
-        log(
-            "渲染面变更: " + (s?.let { "${it.hashCode()} valid=${it.isValid}" } ?: "null") +
-                "（上一个 ${surface?.hashCode() ?: "null"}）",
-        )
         surface = s
         session?.onSurfaceChanged(s)
-    }
-
-    /** UI 回收渲染面：只有确实是当前在用的那一块才清，否则会把刚拿到的新面误清掉。 */
-    fun clearSurface(s: Surface) {
-        if (surface !== s) {
-            log("忽略回收非当前渲染面: ${s.hashCode()}")
-            return
-        }
-        setSurface(null)
     }
 
     fun stopSession(reason: String = "已被 AirPlay 会话占用") {
@@ -192,27 +177,29 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
         session = null
     }
 
-    /**
-     * 接收端用户在本机主动断开：给发送端发一条 `EXT_STOP`，让对面**立刻**收尾。
-     *
-     * 只发消息、不关连接：连接由发送端收尾时自己关；万一对面是旧版本（忽略这条扩展消息），
-     * 它会照旧按"8 秒收不到状态回报"自己结束 —— 两条路都能收敛。
-     */
-    fun notifyUserStopped() {
-        val s = session
-        if (s == null) {
-            log("用户主动断开：当前没有投屏会话，无需通知发送端")
-            return
-        }
-        log("用户主动断开投屏，通知发送端（EXT_STOP）")
-        // **必须离开主线程**：这个入口是 UI（返回键 / 「断开投屏」按钮）直接调的，
-        // 而 Socket 写入在主线程会被 Android 拦下来 —— 抛的 NetworkOnMainThreadException
-        // message 是 null，早先被 catch 静默吞掉，表现就是"发送端什么都没收到"。
-        // 状态回报走的是会话自己的线程，所以从来没事。
-        Thread(
-            { s.sendExtended(byteArrayOf(LanCast.EXT_STOP.toByte())) },
-            "lancast-user-stop",
-        ).apply { isDaemon = true; start() }
+    /** 通知发送端：接收端已在视频库中切换播放了指定 ID 的视频。 */
+    fun notifyVideoSelected(videoId: String) {
+        val s = session ?: return
+        val idBytes = videoId.toByteArray(Charsets.UTF_8)
+        if (idBytes.isEmpty() || idBytes.size + 1 > LanCast.MAX_EXT_PAYLOAD) return
+        val payload = ByteArray(1 + idBytes.size)
+        payload[0] = LanCast.EXT_SELECT_VIDEO.toByte()
+        idBytes.copyInto(payload, 1)
+        Thread({ s.sendExtended(payload) }, "lancast-notify-select").apply { isDaemon = true; start() }
+    }
+
+    /** 通知发送端：接收端用户主动断开整个视频库选片会话。 */
+    fun notifyDisconnectAndClose() {
+        val s = session ?: return
+        session = null
+        Thread({
+            s.sendExtended(byteArrayOf(LanCast.EXT_DISCONNECT.toByte()))
+            try {
+                Thread.sleep(150)
+            } catch (_: InterruptedException) {
+            }
+            s.close("接收端主动断开")
+        }, "lancast-notify-disconnect").apply { isDaemon = true; start() }
     }
 
     private fun startStatsLoop() {
@@ -225,11 +212,15 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
                     break
                 }
                 val s = session ?: continue
-                val (kbps, frames) = s.sampleStats()
+                val (kbps, frames, fpsMeasured) = s.sampleStats()
                 lastFrames = frames
-                _status.value = _status.value.copy(measuredKbps = kbps, frames = lastFrames)
+                _status.value = _status.value.copy(
+                    measuredKbps = kbps,
+                    frames = lastFrames,
+                    measuredFps = fpsMeasured,
+                )
             }
-            _status.value = _status.value.copy(measuredKbps = 0)
+            _status.value = _status.value.copy(measuredKbps = 0, measuredFps = 0f)
         }, "lancast-stats").apply { isDaemon = true; start() }
     }
 
@@ -273,6 +264,7 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
         private val outputLock = Object()
         private var out: OutputStream? = null
         private var statusThread: Thread? = null
+        private val audioPlayer = LanAudioPlayer { msg -> log(msg) }
 
         fun start() {
             Thread({ run() }, "lancast-session").apply { isDaemon = true; start() }
@@ -321,11 +313,19 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
                     when (fh.type) {
                         // 发送端中途改了分辨率（旋转等）：更新尺寸并释放解码器，等随后的 CSD 重建
                         LanCast.TYPE_RESIZE -> onResize(data, fh.len)
+                        LanCast.TYPE_LIBRARY_BASE -> handleLibraryBase(data, fh.len)
                         LanCast.TYPE_PLAY_URL -> handlePlayUrl(data, fh.len)
                         LanCast.TYPE_CTRL -> handleControl(data, fh.len)
                         LanCast.TYPE_STOP -> runCatching { onStopVideo?.invoke() }
                         LanCast.TYPE_VIDEO_CSD -> feedCsd(data.copyOf(fh.len))
                         LanCast.TYPE_VIDEO_AU -> feedFrame(data, fh.len, fh.ptsUs, fh.flags and LanCast.FLAG_KEYFRAME != 0)
+                        LanCast.TYPE_AUDIO_CSD -> {
+                            LanCast.unpackAudioCsd(data, fh.len)?.let { acsd ->
+                                audioPlayer.configure(acsd.sampleRate, acsd.channels, acsd.csd0)
+                                _status.value = _status.value.copy(hasAudio = true)
+                            }
+                        }
+                        LanCast.TYPE_AUDIO_AU -> audioPlayer.feed(data, fh.len, fh.ptsUs)
                         LanCast.TYPE_PING -> Unit
                         else -> Unit
                     }
@@ -420,7 +420,10 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
                     payload[0] = LanCast.EXT_STATUS.toByte()
                     LanCast.putU32(payload, 1, snap.positionMs)
                     LanCast.putU32(payload, 5, snap.durationMs)
-                    payload[9] = ((if (snap.playing) 1 else 0) or (if (snap.buffering) 2 else 0)).toByte()
+                    val flags = (if (snap.playing) LanCast.STATUS_FLAG_PLAYING else 0) or
+                        (if (snap.buffering) LanCast.STATUS_FLAG_BUFFERING else 0) or
+                        (if (snap.browsing) LanCast.STATUS_FLAG_BROWSING else 0)
+                    payload[9] = flags.toByte()
                     sendExtended(payload)
                     count++
                     if (count == 1L || count % 15L == 0L) {
@@ -434,22 +437,27 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
         fun sendExtended(payload: ByteArray) {
             if (payload.isEmpty() || payload.size > LanCast.MAX_EXT_PAYLOAD) return
             synchronized(outputLock) {
-                val stream = out ?: run {
-                    log("反向消息发送失败：会话输出流已关闭")
-                    return
-                }
+                val stream = out ?: return
                 try {
                     stream.write(LanCast.EXT_BYTE)
                     stream.write(payload.size and 0xFF)
                     stream.write((payload.size ushr 8) and 0xFF)
                     stream.write(payload)
                     stream.flush()
-                } catch (e: Exception) {
-                    // 连类型一起打：NetworkOnMainThreadException 之类的 message 是 null，
-                    // 只打 e.message 会得到一句没用的"失败: null"（真踩过）
-                    log("反向消息发送失败: ${e.javaClass.simpleName} ${e.message}")
+                } catch (_: Exception) {
                 }
             }
+        }
+
+        /** 收到 TYPE_LIBRARY_BASE：保存发送端视频库基址并开启状态心跳。 */
+        private fun handleLibraryBase(data: ByteArray, len: Int) {
+            if (len <= 0) return
+            val base = String(data, 0, len, Charsets.UTF_8).trim().trimEnd('/')
+            if (!base.startsWith("http://") && !base.startsWith("https://")) return
+            log("收到发送端视频库地址: $base")
+            _status.value = _status.value.copy(error = null)
+            runCatching { this@LanCastReceiver.onLibraryBase?.invoke(base) }
+            startStatusTicker()
         }
 
         /** 收到 TYPE_PLAY_URL：把地址交给 Service 用系统原生播放器播放。
@@ -464,6 +472,9 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
             }
             log("收到投视频请求: $url")
             _status.value = _status.value.copy(error = null)
+            RemoteVideoLibrary.extractBaseUrl(url)?.let { base ->
+                runCatching { this@LanCastReceiver.onLibraryBase?.invoke(base) }
+            }
             runCatching { this@LanCastReceiver.onPlayUrl?.invoke(url) }
             startStatusTicker()
         }
@@ -509,8 +520,9 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
                 val format = MediaFormat.createVideoFormat(MIME, fmtW.coerceAtLeast(16), fmtH.coerceAtLeast(16))
                 format.setByteBuffer("csd-0", ByteBuffer.wrap(sps))
                 format.setByteBuffer("csd-1", ByteBuffer.wrap(pps))
-                if (!cur.isValid) log("渲染面已失效（isValid=false），解码器多半建不起来")
-                val c = createDecoder(format, cur, fmtW, fmtH)
+                val c = MediaCodec.createDecoderByType(MIME)
+                c.configure(format, cur, null, 0)
+                c.start()
                 codec = c
                 codecW = fmtW
                 codecH = fmtH
@@ -531,62 +543,9 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
             }
         }
 
-        /**
-         * 建解码器：**先平台默认，再逐个试其他能覆盖该尺寸的解码器（硬解优先、软解兜底）**。
-         *
-         * 为什么要阶梯：`createDecoderByType` 只给第一个匹配的编解码器，它一旦在这个尺寸/这块
-         * 渲染面上配置失败（真机实测：`MediaCodec.configure` 里 nativeWindowConnect 返回 EINVAL，
-         * 抛的是 message 为空的 IllegalArgumentException），进程里就再没有第二次机会 ——
-         * 看门狗每 2 秒重试一次，永远撞同一堵墙，用户看到的就是一直黑屏/花屏。
-         */
-        private fun createDecoder(format: MediaFormat, surface: Surface, w: Int, h: Int): MediaCodec {
-            var last: Throwable? = null
-            for (name in decoderCandidates(w, h)) {
-                val c = try {
-                    if (name == null) MediaCodec.createDecoderByType(MIME) else MediaCodec.createByCodecName(name)
-                } catch (e: Throwable) {
-                    last = e
-                    log("解码器实例创建失败（${name ?: "平台默认"}）: ${e.javaClass.simpleName} ${e.message}")
-                    continue
-                }
-                try {
-                    c.configure(format, surface, null, 0)
-                    c.start()
-                    return c
-                } catch (e: Throwable) {
-                    last = e
-                    log("解码器配置失败（${c.name}）: ${e.javaClass.simpleName} ${e.message}")
-                    runCatching { c.release() }
-                }
-            }
-            throw last ?: IllegalStateException("本机没有可用的 H.264 解码器")
-        }
-
-        /** `null` = 平台默认；其余是具体解码器名。尺寸不支持的先滤掉，省得白试一轮。 */
-        private fun decoderCandidates(w: Int, h: Int): List<String?> {
-            val all = runCatching {
-                MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.filter { info ->
-                    !info.isEncoder && info.supportedTypes.any { it.equals(MIME, ignoreCase = true) }
-                }
-            }.getOrDefault(emptyList())
-            fun softwareOnly(info: MediaCodecInfo): Boolean =
-                if (Build.VERSION.SDK_INT >= 29) info.isSoftwareOnly
-                else info.name.startsWith("OMX.google.", true) || info.name.startsWith("c2.android.", true)
-            fun sizeOk(info: MediaCodecInfo): Boolean = runCatching {
-                val caps = info.getCapabilitiesForType(MIME).videoCapabilities
-                // 有些解码器只报横屏上限
-                caps.isSizeSupported(w, h) || (w < h && caps.isSizeSupported(h, w))
-            }.getOrDefault(true)
-            return buildList {
-                add(null)
-                all.sortedBy { if (softwareOnly(it)) 1 else 0 }
-                    .filter { sizeOk(it) }
-                    .forEach { add(it.name) }
-            }
-        }
-
         private fun feedFrame(data: ByteArray, len: Int, ptsUs: Long, keyframe: Boolean) =
             synchronized(outputLock) { feedFrameLocked(data, len, ptsUs, keyframe) }
+
         private fun feedFrameLocked(data: ByteArray, len: Int, ptsUs: Long, keyframe: Boolean) {
             val c = codec ?: run {
                 // 还没准备好解码器（例如 Surface 未就绪）：丢弃，等 CSD/关键帧
@@ -609,7 +568,6 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
                 }
                 c.queueInputBuffer(index, 0, len, relPts, flags)
                 framesInWindow++
-                lastSampleAt = System.currentTimeMillis()
             } catch (e: Throwable) {
                 log("送帧失败: ${e.message}")
             }
@@ -659,16 +617,17 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
             _status.value = _status.value.copy(decoder = "")
         }
 
-        /** 返回 (近 1 秒 kbps, 累计帧数)。 */
-        fun sampleStats(): Pair<Int, Long> {
+        /** 返回 (近 1 秒 kbps, 累计帧数, 实测 fps)。 */
+        fun sampleStats(): Triple<Int, Long, Float> {
             val now = System.currentTimeMillis()
             val dt = (now - lastSampleAt).coerceAtLeast(1)
             val kbps = (bytesInWindow * 8 / dt).toInt()
+            val fpsMeasured = framesInWindow * 1000f / dt
             bytesInWindow = 0
             lastSampleAt = now
             val total = framesInWindow
             framesInWindow = 0
-            return kbps to total
+            return Triple(kbps, total, fpsMeasured)
         }
 
         fun close(reason: String = "关闭") {
@@ -680,6 +639,7 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
         private fun closeInternal() {
             if (closed) return
             closed = true
+            audioPlayer.stop()
             releaseCodec()
             try {
                 socket.close()
@@ -689,11 +649,14 @@ class LanCastReceiver(private val onLog: (String) -> Unit = {}) {
             _status.value = _status.value.copy(
                 client = null,
                 measuredKbps = 0,
+                measuredFps = 0f,
+                hasAudio = false,
                 decoder = "",
                 width = 0,
                 height = 0,
                 fps = 0,
             )
+            runCatching { this@LanCastReceiver.onSessionEnded?.invoke() }
         }
     }
 

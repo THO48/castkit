@@ -25,7 +25,6 @@ import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import android.view.Surface
-import android.view.SurfaceHolder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -50,6 +49,7 @@ import io.github.jqssun.airplay.net.LanCast
 import io.github.jqssun.airplay.net.LanCastDiscovery
 import io.github.jqssun.airplay.net.LanCastReceiver
 import io.github.jqssun.airplay.net.LanVideoStatus
+import io.github.jqssun.airplay.net.RemoteVideoItem
 import io.github.jqssun.airplay.renderer.AirPlayVideoPlayer
 import io.github.jqssun.airplay.renderer.AudioRenderer
 import io.github.jqssun.airplay.renderer.LanVideoPlayer
@@ -97,6 +97,10 @@ class AirPlayService : LifecycleService(), RaopCallbackHandler, LogListener {
      */
     val lanVideoPlayer: LanVideoPlayer by lazy { LanVideoPlayer(this) { msg -> log(msg) } }
     val lanVideoState = lanVideoPlayer.state
+
+    /** CastKit: 当前连接的发送端视频库 HTTP 基址（退出当前视频播放后依然保留，供平板继续选片）。 */
+    private val _remoteLibraryBaseUrl = MutableStateFlow<String?>(null)
+    val remoteLibraryBaseUrl = _remoteLibraryBaseUrl.asStateFlow()
 
     /** CastKit: 投屏自动发现（回应发送端 UDP 探测，并周期性广播自身地址） */
     val lanDiscovery: LanCastDiscovery by lazy {
@@ -367,6 +371,11 @@ class AirPlayService : LifecycleService(), RaopCallbackHandler, LogListener {
         lanCast.airPlayBusyProvider = { _connectionCount.value > 0 }
         // 收到局域网投屏时把界面拉到前台：否则没有 Surface，画面无处渲染（等同"没反应"）
         lanCast.onSessionStarted = { if (shouldLaunchOnConnect()) launchMainActivity() }
+        // 收到发送端视频库地址：记住基址并拉到前台（供接收端自由浏览/选片）
+        lanCast.onLibraryBase = { base ->
+            _remoteLibraryBaseUrl.value = base
+            launchMainActivity()
+        }
         // 投视频文件：需要界面在前台才有 Surface，所以把界面拉到前台；拉不起来就靠可点通知兜底
         lanCast.onPlayUrl = { url ->
             val name = runCatching {
@@ -376,24 +385,40 @@ class AirPlayService : LifecycleService(), RaopCallbackHandler, LogListener {
             launchMainActivity()
             lanVideoPlayer.play(url, name)
         }
-        lanCast.onStopVideo = { lanVideoPlayer.stop() }
-        // 发送端当遥控器：播放/暂停/切换/seek 都作用在本地这个 MediaPlayer 上
+        // 发送端主动结束投送：停播并清理远程视频库入口
+        lanCast.onStopVideo = {
+            lanVideoPlayer.stop()
+            _remoteLibraryBaseUrl.value = null
+        }
+        lanCast.onSessionEnded = {
+            if (!lanVideoState.value.active) {
+                _remoteLibraryBaseUrl.value = null
+            }
+        }
+        // 发送端当遥控器：播放/暂停/切换/seek/倍速/音量都作用在本地播放器与音频系统上
         lanCast.onControlAction = { action, value ->
             when (action) {
                 LanCast.ACTION_PLAY -> lanVideoPlayer.play()
                 LanCast.ACTION_PAUSE -> lanVideoPlayer.pause()
                 LanCast.ACTION_TOGGLE -> lanVideoPlayer.toggle()
                 LanCast.ACTION_SEEK -> lanVideoPlayer.seekTo(value)
+                LanCast.ACTION_SPEED -> if (value in 25..300) lanVideoPlayer.setSpeed(value / 100f)
+                LanCast.ACTION_VOLUME_DELTA -> {
+                    val dir = if (value != 0L) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
+                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, dir, AudioManager.FLAG_SHOW_UI)
+                }
+                LanCast.ACTION_SEEK_FORWARD -> lanVideoPlayer.seekBy(value)
+                LanCast.ACTION_SEEK_BACKWARD -> lanVideoPlayer.seekBy(-value)
             }
             log("投屏遥控: action=$action value=$value")
         }
-        // 播放状态回报：只提供快照，实际按秒发送由会话线程负责（见 LanCastReceiver.startStatusTicker）
+        // 播放状态回报：在播时回报进度；退出当前视频在选片时回报 browsing=true 保持连接存活
         lanCast.videoStatusProvider = {
             val st = lanVideoState.value
-            if (st.active) {
-                LanVideoStatus(st.positionMs, st.durationMs, st.playing, st.buffering)
-            } else {
-                null
+            when {
+                st.active -> LanVideoStatus(st.positionMs, st.durationMs, st.playing, st.buffering, browsing = false)
+                _remoteLibraryBaseUrl.value != null -> LanVideoStatus(0L, 0L, playing = false, buffering = false, browsing = true)
+                else -> null
             }
         }
         // 开始播了就撤掉"收到投视频"的兜底通知
@@ -609,9 +634,7 @@ class AirPlayService : LifecycleService(), RaopCallbackHandler, LogListener {
 
     fun clearVideoSurface(surface: Surface) {
         videoRenderer.clearSurface(surface)
-        // 只回收"当前在用的那一块"：这个方法会被不同渲染面的销毁回调调用，
-        // 无条件清空会把刚建立的新面一起清掉（真机上表现为投屏永远黑屏）。
-        lanCast.clearSurface(surface)
+        lanCast.setSurface(null)
     }
 
     /** CastKit: 「投视频文件」的渲染面（与镜像面分开，同一时刻只会有一个在显示）。 */
@@ -620,27 +643,43 @@ class AirPlayService : LifecycleService(), RaopCallbackHandler, LogListener {
     }
 
     fun clearLanVideoSurface(surface: Surface) {
-        lanVideoPlayer.setSurface(null)
+        lanVideoPlayer.clearSurface(surface)
     }
 
-    /** 渲染面的真实像素尺寸来源（libVLC 的 vout 必须拿到）。 */
-    fun setLanVideoSurfaceHolder(holder: SurfaceHolder) {
-        lanVideoPlayer.setSurfaceHolder(holder)
-    }
-
-    /**
-     * 接收端用户点了「断开投屏」/ 返回键：停掉本机播放，**并通知发送端立刻收尾**
-     * （不然发送端要等 8 秒收不到状态回报才结束，看着就像断不掉）。
-     * 发送端发来的 `TYPE_STOP` 走的是 `lanCast.onStopVideo`，不会回到这里、不会形成回环。
-     */
     fun stopLanVideo() {
-        lanCast.notifyUserStopped()
         lanVideoPlayer.stop()
+    }
+
+    /** 接收端在发送端视频库中点播另一个视频，并通知发送端同步遥控器。 */
+    fun playRemoteVideo(item: RemoteVideoItem) {
+        log("接收端选片播放: ${item.name}")
+        lanVideoPlayer.play(item.url, item.name)
+        lanCast.notifyVideoSelected(item.id)
+    }
+
+    /** 接收端退出当前视频播放但保持连接，留在发送端视频库继续选片。 */
+    fun exitLanVideoToLibrary() {
+        log("退出当前视频，返回发送端视频库")
+        lanVideoPlayer.stop()
+    }
+
+    /** 接收端彻底断开与发送端的投屏/选片连接。 */
+    fun closeRemoteLibrarySession() {
+        log("接收端主动断开投屏连接")
+        lanVideoPlayer.stop()
+        _remoteLibraryBaseUrl.value = null
+        lanCast.notifyDisconnectAndClose()
     }
 
     fun toggleLanVideo() = lanVideoPlayer.toggle()
 
     fun seekLanVideo(positionMs: Long) = lanVideoPlayer.seekTo(positionMs)
+
+    fun seekLanVideoBy(deltaMs: Long) = lanVideoPlayer.seekBy(deltaMs)
+
+    fun setLanVideoSpeed(speed: Float) = lanVideoPlayer.setSpeed(speed)
+
+    fun disconnectLanCast() = lanCast.stopSession("用户主动断开")
 
     /**
      * CastKit: 删除配对密钥（airplay.pem）并重启服务，用于排除"密钥陈旧/损坏导致 iOS 配对失败"。

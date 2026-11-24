@@ -10,9 +10,6 @@
 
     <string name="action_start">开始投屏</string>
     <string name="action_stop">停止投屏</string>
-    <string name="cast_page_video_running">正在投送视频，可在播放页停止</string>
-    <string name="cast_page_video_hint">请到「视频」页选一个视频开投</string>
-    <string name="action_done">完成</string>
 
     <string name="section_target">接收端</string>
     <string name="target_host">接收端 IP</string>
@@ -34,13 +31,14 @@
     <string name="notification_stop">停止</string>
 
     <string name="err_no_projection">未获得录屏授权</string>
-    <string name="err_bad_address">接收端地址无效</string>
+    <string name="err_bad_address">请先选择接收端或填写有效 IP 地址</string>
     <string name="err_connect_failed">无法连接接收端：%1$s</string>
+    <string name="err_audio_permission_fallback">未授予音频权限，已改为仅投送画面</string>
+    <string name="label_mirror_audio">同步投送系统声音</string>
+    <string name="label_mirror_audio_desc">Android 10+ 采集本机媒体与游戏声音并同步到接收端（部分应用可能限制采集）</string>
 
     <string name="label_keep_aspect">保持屏幕比例</string>
     <string name="label_keep_aspect_desc">按手机屏幕比例推导分辨率，避免画面被拉伸变形（推荐）</string>
-    <!-- 删掉 CUSTOM 之后，这个开关是唯一决定「720p 到底指什么」的东西，说明必须写死语义 -->
-    <string name="label_keep_aspect_desc_on">开启：档位数字表示<b>短边</b>，长边按本机屏幕比例推导；关闭：按标准 16:9 投出</string>
     <string name="label_custom_short_side">短边像素</string>
     <string name="label_custom_short_side_desc">长边按屏幕比例自动计算，例如短边 720 → 720×1600</string>
     <string name="effective_size">实际投出：%1$d×%2$d</string>
@@ -94,18 +92,16 @@
 
     <!-- 视频库 -->
     <string name="empty_no_videos">没有扫描到视频。确认本机有视频文件，或点右上角重新扫描。</string>
-    <string name="empty_no_videos_title">暂无视频</string>
-    <string name="cd_more">更多</string>
     <string name="empty_folder">这个文件夹里没有视频</string>
     <string name="partial_access_hint">你只授权了部分视频，这里只显示被允许的那些。</string>
     <string name="action_pick_more">选择更多</string>
     <string name="action_use_system_picker">改用系统文件选择器</string>
-    <string name="nomedia_need_all_files">还缺「所有文件访问」权限：`.nomedia` 文件夹、以及 `.vob` / `.rmvb` 这类媒体库不收录的格式都扫不到（点右上角「显示」去授权）。</string>
+    <string name="nomedia_need_all_files">已开启 .nomedia 显示，但还缺「所有文件访问」权限，这部分目录扫不到（点右上角「显示」去授权）。</string>
     <string name="browser_folder_count">文件夹 · %1$d</string>
     <string name="browser_video_count">视频 · %1$d</string>
     <string name="nomedia_switch_title">显示 .nomedia 文件夹</string>
     <string name="nomedia_need_grant">需要「所有文件访问」权限，点此去授权</string>
-    <string name="nomedia_hint">这些目录 MediaStore 不索引，默认看不到；`.vob` / `.rmvb` 这类媒体库不收录的格式也要靠这个权限才扫得到</string>
+    <string name="nomedia_hint">这些目录 MediaStore 不索引，默认看不到</string>
     <string name="permission_title">需要读取本机视频的权限</string>
     <string name="permission_desc">授予权限后可以直接按文件夹浏览本机视频、看缩略图和时长，点一下就能投到接收端。</string>
     <string name="action_grant">授予权限</string>
@@ -116,25 +112,9 @@
     <string name="action_to_landscape">切到横屏</string>
     <string name="action_to_portrait">切到竖屏</string>
     <string name="action_cast">投屏</string>
-    <!-- 「切方向」悬浮钮只留图标不带文字：方向看画面朝向就知道，文字会跟标题抢读 -->
-    <string name="player_label_stop">停止</string>
-    <string name="player_forward_10">前进 10 秒</string>
-    <string name="player_rewind_10">后退 10 秒</string>
-    <string name="player_prev_video">上一个视频</string>
-    <string name="player_next_video">下一个视频</string>
-    <string name="player_speed_indicator">%1$d× 快进中</string>
-    <!-- 投送中沉浸态（替代本机 Surface 的死帧） -->
-    <string name="casting_immersive_title">正在投送到</string>
-    <string name="casting_immersive_desc">本机已暂停，这里的播放与进度条控制的是接收端</string>
-    <!-- Snackbar 文案（替代常驻提示语） -->
-    <string name="snackbar_cast_started">已开始投送到 %1$s，本机已暂停</string>
-    <string name="snackbar_cast_stopped">已停止投送，进度已对齐到 %1$s</string>
-    <!-- 接收端断开 / 自己点停止之后：本机接着播（不是"对齐到某处"那么干） -->
-    <string name="snackbar_cast_takeover">已停止投送，本机从 %1$s 接着播</string>
-    <!-- 打开视频时命中"上次看到一半"的记忆 -->
-    <string name="snackbar_resume_progress">已从上次的 %1$s 继续播放</string>
     <string name="casting_label">投送中</string>
     <string name="cast_receiver">接收端</string>
+    <string name="hint_orientation">「切到横/竖屏」只改本机方向，接收端画面不受影响</string>
     <string name="casting_remote_hint">正在投送到 %1$s · 本机已暂停，这里的播放/进度条控制的是接收端</string>
 
     <!-- 设备选择弹窗 -->

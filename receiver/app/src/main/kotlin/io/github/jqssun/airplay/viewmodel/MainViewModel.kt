@@ -6,7 +6,6 @@ import android.content.Intent
 import android.media.AudioManager
 import android.os.SystemClock
 import android.view.Surface
-import android.view.SurfaceHolder
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -15,6 +14,10 @@ import io.github.jqssun.airplay.Prefs
 import io.github.jqssun.airplay.audio.TrackInfo
 import io.github.jqssun.airplay.debug.PublicLogWriter
 import io.github.jqssun.airplay.net.LanCastStatus
+import io.github.jqssun.airplay.net.RemoteLibraryState
+import io.github.jqssun.airplay.net.RemoteThumbCache
+import io.github.jqssun.airplay.net.RemoteVideoItem
+import io.github.jqssun.airplay.net.RemoteVideoLibrary
 import io.github.jqssun.airplay.renderer.LanVideoState
 import io.github.jqssun.airplay.service.AirPlayService
 import io.github.jqssun.airplay.service.AirPlayService.ServerState
@@ -132,6 +135,21 @@ class MainViewModel @Inject constructor(app: Application) : AndroidViewModel(app
     /** CastKit: 局域网「投视频文件」播放状态（发送端只给地址，这里用系统播放器播）。 */
     private val _lanVideo = MutableStateFlow(LanVideoState())
     val lanVideo: StateFlow<LanVideoState> = _lanVideo.asStateFlow()
+
+    /** CastKit: 发送端远程视频库状态（接收端退出当前播放后可自由浏览并切换其他视频）。 */
+    private val _remoteLibrary = MutableStateFlow(RemoteLibraryState())
+    val remoteLibrary: StateFlow<RemoteLibraryState> = _remoteLibrary.asStateFlow()
+
+    private val _remoteLibraryVisible = MutableStateFlow(false)
+    val remoteLibraryVisible: StateFlow<Boolean> = _remoteLibraryVisible.asStateFlow()
+
+    /** 远程视频库当前所在目录（退出视频时自动定位到该视频所属文件夹）。 */
+    private val _remoteLibraryPath = MutableStateFlow("")
+    val remoteLibraryPath: StateFlow<String> = _remoteLibraryPath.asStateFlow()
+    private var _userNavigatedFolder = false
+    private var _lastPlayedTitle = ""
+    private var _lastFetchedLibraryBase: String? = null
+    private var _libraryFetchJob: Job? = null
 
     /** 本机 IPv4（Wi-Fi/热点），供发送端填写。 */
     private val _localIp = MutableStateFlow<String?>(null)
@@ -549,11 +567,6 @@ class MainViewModel @Inject constructor(app: Application) : AndroidViewModel(app
         service?.clearLanVideoSurface(surface)
     }
 
-    /** libVLC 的 vout 需要渲染区域的实际像素尺寸，只有 SurfaceHolder 拿得到。 */
-    fun onLanVideoSurfaceHolder(holder: SurfaceHolder) {
-        service?.setLanVideoSurfaceHolder(holder)
-    }
-
     fun toggleLanVideo() {
         service?.toggleLanVideo()
     }
@@ -562,8 +575,117 @@ class MainViewModel @Inject constructor(app: Application) : AndroidViewModel(app
         service?.seekLanVideo(positionMs)
     }
 
+    fun seekLanVideoBy(deltaMs: Long) {
+        service?.seekLanVideoBy(deltaMs)
+    }
+
+    fun setLanVideoSpeed(speed: Float) {
+        service?.setLanVideoSpeed(speed)
+    }
+
+    fun disconnectLanCast() {
+        service?.disconnectLanCast()
+    }
+
     fun stopLanVideo() {
         service?.stopLanVideo()
+    }
+
+    fun setRemoteLibraryPath(path: String) {
+        _userNavigatedFolder = true
+        _remoteLibraryPath.value = path
+    }
+
+    private fun _syncPathToActiveVideo(items: List<RemoteVideoItem>, activeId: String) {
+        val matched = items.firstOrNull { activeId.isNotBlank() && it.id == activeId }
+            ?: items.firstOrNull { _lastPlayedTitle.isNotBlank() && it.name == _lastPlayedTitle }
+        if (matched != null) {
+            _remoteLibraryPath.value = matched.folder
+        }
+    }
+
+    fun exitLanVideoToLibrary() {
+        val lastTitle = _lanVideo.value.title
+        if (lastTitle.isNotBlank()) _lastPlayedTitle = lastTitle
+        service?.exitLanVideoToLibrary()
+        val base = _remoteLibrary.value.baseUrl ?: service?.remoteLibraryBaseUrl?.value
+        if (base != null) {
+            if (_remoteLibrary.value.baseUrl == null) {
+                _remoteLibrary.value = _remoteLibrary.value.copy(baseUrl = base)
+            }
+            _userNavigatedFolder = false
+            _syncPathToActiveVideo(_remoteLibrary.value.items, _remoteLibrary.value.activeId)
+            _remoteLibraryVisible.value = true
+            if (_remoteLibrary.value.items.isEmpty() && !_remoteLibrary.value.loading) {
+                _fetchRemoteLibrary(base, forceRefresh = false)
+            }
+        }
+    }
+
+    fun openRemoteLibrary() {
+        val base = _remoteLibrary.value.baseUrl ?: service?.remoteLibraryBaseUrl?.value
+        if (base != null) {
+            if (_remoteLibrary.value.baseUrl == null) {
+                _remoteLibrary.value = _remoteLibrary.value.copy(baseUrl = base)
+            }
+            _remoteLibraryVisible.value = true
+            if (_remoteLibrary.value.items.isEmpty() && !_remoteLibrary.value.loading) {
+                refreshRemoteLibrary(force = false)
+            }
+        }
+    }
+
+    fun hideRemoteLibrary() {
+        _remoteLibraryVisible.value = false
+    }
+
+    fun playRemoteVideo(item: RemoteVideoItem) {
+        _lastPlayedTitle = item.name
+        _userNavigatedFolder = false
+        _remoteLibraryPath.value = item.folder
+        _remoteLibrary.value = _remoteLibrary.value.copy(activeId = item.id)
+        service?.playRemoteVideo(item)
+    }
+
+    fun closeRemoteLibrarySession() {
+        _remoteLibraryVisible.value = false
+        _remoteLibraryPath.value = ""
+        _userNavigatedFolder = false
+        _lastPlayedTitle = ""
+        _lastFetchedLibraryBase = null
+        _libraryFetchJob?.cancel()
+        _remoteLibrary.value = RemoteLibraryState()
+        RemoteThumbCache.clear()
+        service?.closeRemoteLibrarySession()
+    }
+
+    fun refreshRemoteLibrary(force: Boolean = true) {
+        val base = _remoteLibrary.value.baseUrl ?: service?.remoteLibraryBaseUrl?.value ?: return
+        _fetchRemoteLibrary(base, forceRefresh = force)
+    }
+
+    private fun _fetchRemoteLibrary(baseUrl: String, forceRefresh: Boolean) {
+        _libraryFetchJob?.cancel()
+        _remoteLibrary.value = _remoteLibrary.value.copy(
+            baseUrl = baseUrl,
+            loading = true,
+            error = null,
+        )
+        _libraryFetchJob = viewModelScope.launch {
+            val res = RemoteVideoLibrary.fetch(baseUrl, refresh = forceRefresh)
+            res.onSuccess { fetched ->
+                val active = _remoteLibrary.value.activeId.ifBlank { fetched.activeId }
+                _remoteLibrary.value = fetched.copy(activeId = active)
+                if (!_userNavigatedFolder) {
+                    _syncPathToActiveVideo(fetched.items, active)
+                }
+            }.onFailure { err ->
+                _remoteLibrary.value = _remoteLibrary.value.copy(
+                    loading = false,
+                    error = err.message ?: "无法读取发送端视频列表",
+                )
+            }
+        }
     }
 
     fun toggleVideoPlayPause(showOverlay: Boolean = true) = setVideoPlaying(!_videoPlaying.value, showOverlay)
@@ -653,7 +775,42 @@ class MainViewModel @Inject constructor(app: Application) : AndroidViewModel(app
             _serverState.value = it.serverState.value
             _connectionCount.value = it.connectionCount.value
             _lanStatus.value = it.lanStatus.value
-            _lanVideo.value = it.lanVideoState.value
+            val prevLanActive = _lanVideo.value.active
+            val curLanVideo = it.lanVideoState.value
+            if (curLanVideo.active && curLanVideo.title.isNotBlank()) {
+                _lastPlayedTitle = curLanVideo.title
+            }
+            _lanVideo.value = curLanVideo
+            val baseUrl = it.remoteLibraryBaseUrl.value
+            if (baseUrl != _lastFetchedLibraryBase) {
+                _lastFetchedLibraryBase = baseUrl
+                if (baseUrl != null) {
+                    // 连上发送端视频库后自动拉取视频列表；如果当前没有直接起播视频，直接打开选片页
+                    _userNavigatedFolder = false
+                    if (!curLanVideo.active) _remoteLibraryVisible.value = true
+                    _fetchRemoteLibrary(baseUrl, forceRefresh = false)
+                } else {
+                    _libraryFetchJob?.cancel()
+                    _remoteLibraryVisible.value = false
+                    _remoteLibraryPath.value = ""
+                    _userNavigatedFolder = false
+                    _remoteLibrary.value = RemoteLibraryState()
+                }
+            } else if (prevLanActive && !curLanVideo.active && baseUrl != null) {
+                // 视频自然播完或被退出时，直接回到该视频所在文件夹
+                _userNavigatedFolder = false
+                _syncPathToActiveVideo(_remoteLibrary.value.items, _remoteLibrary.value.activeId)
+                _remoteLibraryVisible.value = true
+            }
+            // 同步当前播放中的 activeId 与所在目录
+            if (curLanVideo.active && curLanVideo.url != null) {
+                val urlId = curLanVideo.url.substringAfter("/item/", "").substringBefore('/')
+                if (urlId.isNotBlank() && urlId != _remoteLibrary.value.activeId) {
+                    _remoteLibrary.value = _remoteLibrary.value.copy(activeId = urlId)
+                    _userNavigatedFolder = false
+                    _syncPathToActiveVideo(_remoteLibrary.value.items, urlId)
+                }
+            }
             if (_localIp.value == null) _refreshLocalIp()
             _videoAspect.value = it.videoAspect.value
             _videoResolution.value = it.videoResolution.value

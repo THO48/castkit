@@ -48,26 +48,38 @@ object LanCast {
     const val TYPE_CTRL = 8
 
     /**
+     * 告知接收端发送端视频库 HTTP 基址（v1.3）：payload = UTF-8 `http://<ip>:<port>`。
+     * 接收端据此可随时拉取 `/api/library` 浏览发送端视频列表并点播任意视频。
+     */
+    const val TYPE_LIBRARY_BASE = 9
+
+    /**
      * 反向扩展消息前缀（接收端 → 发送端）。格式：`0x7F | u16 len | payload[len]`，
      * payload[0] 是类型。用 0x7F 当转义符是为了向后兼容：旧发送端会把它当成未知控制码直接忽略，
      * 镜像链路的原有裸字节控制（READY/REQUEST_KEYFRAME/BYE）不受影响。
      */
     const val EXT_BYTE = 0x7F
     const val EXT_STATUS = 9
+    /** 接收端在视频库中切换了另一个视频：payload = UTF-8 videoId。 */
+    const val EXT_SELECT_VIDEO = 10
+    /** 接收端主动断开整个投屏选片会话。 */
+    const val EXT_DISCONNECT = 11
 
-    /**
-     * 接收端用户在本机**主动断开**投送（接收端 → 发送端，payload 为空）。
-     *
-     * 没有这条消息时，接收端按返回只能停掉自己的播放器，要等发送端 8 秒收不到状态回报
-     * 才自己收尾 —— 用户感知就是"接收端断不干净"。
-     */
-    const val EXT_STOP = 10
+    /** `EXT_STATUS` flags 位定义。 */
+    const val STATUS_FLAG_PLAYING = 1
+    const val STATUS_FLAG_BUFFERING = 2
+    /** 接收端已退出当前视频播放，但仍保持连接在浏览发送端视频库。 */
+    const val STATUS_FLAG_BROWSING = 4
 
     /** `TYPE_CTRL` 的动作。 */
     const val ACTION_PLAY = 1
     const val ACTION_PAUSE = 2
     const val ACTION_TOGGLE = 3
     const val ACTION_SEEK = 4
+    const val ACTION_SPEED = 5
+    const val ACTION_VOLUME_DELTA = 6
+    const val ACTION_SEEK_FORWARD = 7
+    const val ACTION_SEEK_BACKWARD = 8
 
     /** 扩展消息负载上限（防御异常长度）。 */
     const val MAX_EXT_PAYLOAD = 1024
@@ -143,6 +155,17 @@ object LanCast {
         if (csd.size < 4 + spsLen + ppsLen) return null
         val pps = csd.copyOfRange(4 + spsLen, 4 + spsLen + ppsLen)
         return sps to pps
+    }
+
+    /** `TYPE_AUDIO_CSD` 负载 -> (sampleRate, channels, csd0)。 */
+    data class AudioCsd(val sampleRate: Int, val channels: Int, val csd0: ByteArray)
+
+    fun unpackAudioCsd(data: ByteArray, len: Int): AudioCsd? {
+        if (len < 7) return null
+        val sampleRate = u32(data, 0).toInt()
+        val channels = data[4].toInt() and 0xFF
+        if (sampleRate !in 8000..96000 || channels !in 1..2) return null
+        return AudioCsd(sampleRate, channels, data.copyOfRange(5, len))
     }
 
     /** 12 字节帧头解析。 */

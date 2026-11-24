@@ -41,6 +41,7 @@ out/
 # ---- 由 tools/fetch-sources.sh 按需下载的第三方源码 ----
 # 见 docs/BUILD.md：首次构建前会拉取，不需要进版本库
 third_party/
+receiver/app/src/main/prebuiltJniLibs/
 
 # ---- 系统垃圾 ----
 .DS_Store

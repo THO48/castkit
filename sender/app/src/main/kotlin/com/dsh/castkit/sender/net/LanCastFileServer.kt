@@ -1,40 +1,65 @@
 package com.dsh.castkit.sender.net
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import android.util.Log
+import com.dsh.castkit.sender.Prefs
+import com.dsh.castkit.sender.media.VideoItem
+import com.dsh.castkit.sender.media.VideoLibrary
+import com.dsh.castkit.sender.media.VideoLibraryCache
+import com.dsh.castkit.sender.media.VideoThumbnails
+import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileInputStream
 import java.io.IOException
 import java.io.InputStream
+import java.io.RandomAccessFile
 import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLEncoder
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 单文件 HTTP 服务：把选中的视频通过局域网暴露给接收端，接收端用系统原生播放器直接播。
- *
- * 为什么要自己写而不是转码推流：接收端能拿到**原始码流**——原始画质、有声音、能拖进度、
- * 硬解，发送端也完全不碰 MediaProjection（不需要录屏授权）。代价只是发送端要一直开着服务。
- *
- * 实现要点：
- *  - 走 ContentResolver 读取（支持 SAF 选出来的 `content://`，不要求是真实文件路径）；
- *  - 完整支持 `Range` 请求（206 + Content-Range），否则接收端拖进度条会失败；
- *  - 每个连接一个线程，响应完即关（MediaPlayer 可能自己开多条连接）；
- *  - 只服务一个文件，任何 GET 路径都返回它。
+ * 局域网视频流 + 视频库 HTTP 服务：
+ *  - `GET/HEAD /v/<name>`：兼容旧版单文件直播（支持 Range）
+ *  - `GET /api/library`（可选 `?refresh=1`）：返回发送端本机视频库 JSON（供接收端选片）
+ *  - `GET/HEAD /item/<id>/<name>`：按 ID 点播任意视频（完整 HTTP Range 206）
+ *  - `GET /thumb/<id>.jpg`：按 ID 返回视频缩略图 JPEG（复用 VideoThumbnails 缓存）
  */
 class LanCastFileServer(private val context: Context) {
 
-    /** 要投送的文件。 */
+    /** 要投送的单个视频文件。 */
     data class Source(
         val uri: Uri,
         val size: Long,
         val name: String,
+        val mime: String,
+    )
+
+    /** 暴露给接收端浏览的视频库条目。 */
+    data class LibraryEntry(
+        val id: String,
+        val uri: Uri,
+        val name: String,
+        val folder: String,
+        val durationMs: Long,
+        val sizeBytes: Long,
+        val dateAddedSec: Long,
+        val width: Int,
+        val height: Int,
         val mime: String,
     )
 
@@ -48,60 +73,88 @@ class LanCastFileServer(private val context: Context) {
     @Volatile
     private var source: Source? = null
 
+    @Volatile
+    var activeItemId: String = ""
+        private set
+
+    @Volatile
+    var baseUrl: String = ""
+        private set
+
     var port: Int = 0
         private set
 
-    /** 启动服务并返回可访问的完整 URL；失败抛异常。 */
+    private val libraryMap = ConcurrentHashMap<String, LibraryEntry>()
+    @Volatile
+    private var libraryList: List<LibraryEntry> = emptyList()
+
+    /** 启动服务（带初始视频）并返回该视频的可访问 URL。 */
     @Synchronized
     fun start(src: Source, preferredPort: Int = DEFAULT_PORT): String {
-        stop()
+        val base = ensureStarted(preferredPort)
         source = src
+        refreshLibraryIndex(forceReload = libraryList.isEmpty(), ensureSource = src)
+        val matchedId = libraryList.firstOrNull { it.uri == src.uri }?.id ?: idForUri(src.uri)
+        activeItemId = matchedId
+        return itemUrl(base, matchedId, src.name)
+    }
+
+    /** 仅启动视频库共享（不立即播指定视频，由接收端自行选片）。返回 baseUrl。 */
+    @Synchronized
+    fun startLibraryOnly(preferredPort: Int = DEFAULT_PORT): String {
+        val base = ensureStarted(preferredPort)
+        source = null
+        activeItemId = ""
+        refreshLibraryIndex(forceReload = true, ensureSource = null)
+        return base
+    }
+
+    /** 接收端切到另一个视频时同步活跃状态。 */
+    fun setActiveById(id: String): LibraryEntry? {
+        val entry = libraryMap[id] ?: return null
+        activeItemId = entry.id
+        source = Source(entry.uri, entry.sizeBytes, entry.name, entry.mime)
+        return entry
+    }
+
+    fun findEntry(id: String): LibraryEntry? = libraryMap[id]
+
+    private fun ensureStarted(preferredPort: Int): String {
+        if (running.get() && serverSocket != null && baseUrl.isNotEmpty()) {
+            return baseUrl
+        }
+        stop()
         val ss = ServerSocket()
         ss.reuseAddress = true
         val bound = try {
             ss.bind(InetSocketAddress(preferredPort))
             preferredPort
         } catch (e: Exception) {
-            // 首选端口被占：退回系统随机端口
             Log.w(TAG, "端口 $preferredPort 不可用（${e.message}），改用随机端口")
             ss.bind(InetSocketAddress(0))
             ss.localPort
         }
         serverSocket = ss
         port = bound
+        val ip = localIpv4() ?: run {
+            stop()
+            throw IOException("找不到局域网 IPv4 地址（请确认已连 Wi-Fi）")
+        }
+        baseUrl = "http://$ip:$bound"
         running.set(true)
         acceptThread = Thread({ acceptLoop(ss) }, "lancast-file-accept").apply {
             isDaemon = true
             start()
         }
-        val ip = localIpv4() ?: run {
-            stop()
-            throw IOException("找不到局域网 IPv4 地址（请确认已连 Wi-Fi）")
-        }
-        return url(ip, bound, src.name)
-    }
-
-    /**
-     * 换片源但**不重启服务**：端口、监听线程、连接池都不动，接收端下一次 GET 拿到的就是新文件。
-     *
-     * 为什么不做「stop 再 start」：投送中换集（播放页点「上一个/下一个」）要尽量不惊动正在跑的
-     * 会话 —— 重绑端口会关掉监听套接字、让在途连接提前收尾。这里只换 [source] 一个字段：
-     * 已经在跑的 `serve()` 早把 `source` 读进了局部变量，会自然把旧文件送完/随对端断开结束。
-     *
-     * @return 新文件的可访问地址；服务没在跑或取不到本机 IP 时返回 null（调用方按"重新开投"处理）。
-     */
-    @Synchronized
-    fun switchSource(src: Source): String? {
-        if (!isRunning()) return null
-        source = src
-        val ip = localIpv4() ?: return null
-        return url(ip, port, src.name)
+        return baseUrl
     }
 
     @Synchronized
     fun stop() {
         running.set(false)
         source = null
+        activeItemId = ""
+        baseUrl = ""
         try {
             serverSocket?.close()
         } catch (_: Exception) {
@@ -112,6 +165,81 @@ class LanCastFileServer(private val context: Context) {
     }
 
     fun isRunning(): Boolean = running.get() && serverSocket != null
+
+    /** 构建/刷新可供接收端浏览的视频索引。 */
+    @Synchronized
+    fun refreshLibraryIndex(forceReload: Boolean = false, ensureSource: Source? = source) {
+        val rawItems: List<VideoItem> = try {
+            val cached = if (!forceReload) VideoLibraryCache.merged else null
+            if (!cached.isNullOrEmpty()) {
+                cached
+            } else {
+                val store = VideoLibrary.loadFromMediaStore(context)
+                val extras = if (Prefs.browserIncludeNoMedia(context) && VideoLibrary.canReadAllFiles(context)) {
+                    VideoLibrary.cachedNoMedia(context)
+                } else {
+                    emptyList()
+                }
+                val known = store.mapTo(HashSet()) { it.key }
+                val merged = store + extras.filter { it.key !in known }
+                VideoLibraryCache.merged = merged
+                merged
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "加载视频库索引失败: ${t.message}")
+            emptyList()
+        }
+
+        val entries = ArrayList<LibraryEntry>(rawItems.size + 1)
+        val map = HashMap<String, LibraryEntry>(rawItems.size + 1)
+        var hasEnsure = ensureSource == null
+
+        for (v in rawItems) {
+            val id = idForUri(v.uri)
+            val entry = LibraryEntry(
+                id = id,
+                uri = v.uri,
+                name = v.name,
+                folder = v.folderPath,
+                durationMs = v.durationMs,
+                sizeBytes = v.sizeBytes,
+                dateAddedSec = v.dateAddedSec,
+                width = v.width,
+                height = v.height,
+                mime = guessMime(v.name),
+            )
+            entries += entry
+            map[id] = entry
+            if (ensureSource != null && v.uri == ensureSource.uri) hasEnsure = true
+        }
+
+        if (ensureSource != null && !hasEnsure) {
+            val id = idForUri(ensureSource.uri)
+            val fallbackFolder = if (ensureSource.uri.scheme == "file") {
+                val root = android.os.Environment.getExternalStorageDirectory()?.absolutePath ?: ""
+                val parent = ensureSource.uri.path?.let { java.io.File(it).parentFile?.absolutePath } ?: ""
+                if (root.isNotEmpty() && parent.startsWith(root)) parent.removePrefix(root).trim('/') else ""
+            } else ""
+            val entry = LibraryEntry(
+                id = id,
+                uri = ensureSource.uri,
+                name = ensureSource.name,
+                folder = fallbackFolder,
+                durationMs = 0L,
+                sizeBytes = ensureSource.size,
+                dateAddedSec = System.currentTimeMillis() / 1000L,
+                width = 0,
+                height = 0,
+                mime = ensureSource.mime,
+            )
+            entries.add(0, entry)
+            map[id] = entry
+        }
+
+        libraryMap.clear()
+        libraryMap.putAll(map)
+        libraryList = entries
+    }
 
     private fun acceptLoop(ss: ServerSocket) {
         while (running.get()) {
@@ -147,15 +275,115 @@ class LanCastFileServer(private val context: Context) {
                 }
                 val parts = requestLine.split(' ')
                 val method = parts.getOrNull(0)?.uppercase() ?: return
+                val rawTarget = parts.getOrNull(1) ?: "/"
                 if (method != "GET" && method != "HEAD") {
                     writeSimple(s, "405 Method Not Allowed")
                     return
                 }
-                serve(s, method, parseRange(headers["range"]))
+
+                val path = rawTarget.substringBefore('?')
+                val query = rawTarget.substringAfter('?', "")
+                val range = parseRange(headers["range"])
+
+                when {
+                    path == "/api/library" -> serveLibraryJson(s, method, forceRefresh = query.contains("refresh=1"))
+                    path.startsWith("/thumb/") -> {
+                        val id = path.removePrefix("/thumb/").substringBefore('.').substringBefore('/')
+                        serveThumbnail(s, method, id)
+                    }
+                    path.startsWith("/item/") -> {
+                        val id = path.removePrefix("/item/").substringBefore('/')
+                        val entry = libraryMap[id]
+                        if (entry == null) {
+                            writeSimple(s, "404 Not Found")
+                        } else {
+                            val src = if (entry.sizeBytes > 0) {
+                                Source(entry.uri, entry.sizeBytes, entry.name, entry.mime)
+                            } else {
+                                describe(context, entry.uri)
+                            }
+                            serveSource(s, method, src, range)
+                        }
+                    }
+                    else -> {
+                        val cur = source
+                        if (cur == null) {
+                            writeSimple(s, "404 Not Found")
+                        } else {
+                            serveSource(s, method, cur, range)
+                        }
+                    }
+                }
             } catch (e: Throwable) {
                 Log.d(TAG, "HTTP 连接结束: ${e.message}")
             }
         }
+    }
+
+    private fun serveLibraryJson(socket: Socket, method: String, forceRefresh: Boolean) {
+        if (forceRefresh || libraryList.isEmpty()) {
+            refreshLibraryIndex(forceReload = forceRefresh)
+        }
+        val base = baseUrl
+        val arr = JSONArray()
+        for (item in libraryList) {
+            val obj = JSONObject()
+            obj.put("id", item.id)
+            obj.put("name", item.name)
+            obj.put("folder", item.folder)
+            obj.put("durationMs", item.durationMs)
+            obj.put("sizeBytes", item.sizeBytes)
+            obj.put("dateAddedSec", item.dateAddedSec)
+            obj.put("width", item.width)
+            obj.put("height", item.height)
+            obj.put("url", itemUrl(base, item.id, item.name))
+            obj.put("thumb", "$base/thumb/${item.id}.jpg")
+            arr.put(obj)
+        }
+        val root = JSONObject().apply {
+            put("device", Build.MODEL ?: "Android")
+            put("activeId", activeItemId)
+            put("count", libraryList.size)
+            put("items", arr)
+        }
+        val bytes = root.toString().toByteArray(Charsets.UTF_8)
+        val out = BufferedOutputStream(socket.getOutputStream(), 1 shl 15)
+        val header = "HTTP/1.1 200 OK\r\n" +
+            "Content-Type: application/json; charset=utf-8\r\n" +
+            "Content-Length: ${bytes.size}\r\n" +
+            "Cache-Control: no-cache\r\n" +
+            "Connection: close\r\n\r\n"
+        out.write(header.toByteArray(Charsets.ISO_8859_1))
+        if (method == "GET") out.write(bytes)
+        out.flush()
+    }
+
+    private fun serveThumbnail(socket: Socket, method: String, id: String) {
+        val entry = libraryMap[id] ?: run {
+            writeSimple(socket, "404 Not Found")
+            return
+        }
+        val bmp = try {
+            VideoThumbnails.cached(entry.uri) ?: runBlocking { VideoThumbnails.load(context, entry.uri) }
+        } catch (_: Throwable) {
+            null
+        }
+        if (bmp == null) {
+            writeSimple(socket, "404 Not Found")
+            return
+        }
+        val baos = ByteArrayOutputStream(16 * 1024)
+        bmp.compress(Bitmap.CompressFormat.JPEG, 80, baos)
+        val bytes = baos.toByteArray()
+        val out = BufferedOutputStream(socket.getOutputStream(), 1 shl 15)
+        val header = "HTTP/1.1 200 OK\r\n" +
+            "Content-Type: image/jpeg\r\n" +
+            "Content-Length: ${bytes.size}\r\n" +
+            "Cache-Control: max-age=3600\r\n" +
+            "Connection: close\r\n\r\n"
+        out.write(header.toByteArray(Charsets.ISO_8859_1))
+        if (method == "GET") out.write(bytes)
+        out.flush()
     }
 
     /** `bytes=start-end` / `bytes=start-` / `bytes=-suffix`；非法一律当整文件。 */
@@ -170,7 +398,6 @@ class LanCastFileServer(private val context: Context) {
         return try {
             when {
                 startText.isEmpty() && endText.isNotEmpty() -> {
-                    // 末尾 N 字节：用负数起始表示
                     val n = endText.toLong()
                     -n..-1L
                 }
@@ -184,25 +411,11 @@ class LanCastFileServer(private val context: Context) {
         }
     }
 
-    private fun serve(socket: Socket, method: String, range: LongRange?) {
-        val src = source ?: run {
-            writeSimple(socket, "404 Not Found")
-            return
-        }
+    private fun serveSource(socket: Socket, method: String, src: Source, range: LongRange?) {
         val total = src.size
         val out = BufferedOutputStream(socket.getOutputStream(), 1 shl 16)
 
         if (total <= 0) {
-            // 拿不到大小 -> 无法提供 Range。这条路上**只有 faststart（moov 在前）的文件能播**：
-            // 接收端的 MediaPlayer 会发 `Range: bytes=<末尾偏移>-` 去回取 moov，
-            // 拿不到就是 error(1, -2147483648) / MEDIA_ERROR_UNKNOWN，表现为「这个视频投不了屏」。
-            // 正常情况下 describe() 已经用 fd.statSize 兜住了，走到这里说明确实拿不到大小，
-            // 必须留下明显日志，别再让它悄无声息地失败。
-            Log.w(
-                TAG,
-                "拿不到文件大小（${src.uri}），本次只能无 Range 顺序下发；" +
-                    "moov 在文件末尾的 MP4 会因此播放失败",
-            )
             out.write(
                 ("HTTP/1.1 200 OK\r\nContent-Type: ${src.mime}\r\n" +
                     "Accept-Ranges: none\r\nConnection: close\r\n\r\n")
@@ -216,11 +429,18 @@ class LanCastFileServer(private val context: Context) {
         val start: Long
         val end: Long
         if (range != null && range.first < 0) {
-            // 末尾 N 字节
             val n = (-range.first).coerceAtMost(total)
             start = total - n
             end = total - 1
         } else if (range != null) {
+            if (range.first >= total) {
+                out.write(
+                    ("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */$total\r\n" +
+                        "Connection: close\r\n\r\n").toByteArray(Charsets.ISO_8859_1),
+                )
+                out.flush()
+                return
+            }
             start = range.first.coerceIn(0, total - 1)
             end = (if (range.last == Long.MAX_VALUE) total - 1 else range.last).coerceIn(start, total - 1)
         } else {
@@ -241,8 +461,71 @@ class LanCastFileServer(private val context: Context) {
         out.flush()
         if (method == "HEAD") return
 
-        val input = openAt(src, start) ?: return
+        // 优先走 O(1) 内核 lseek（RandomAccessFile / ParcelFileDescriptor + FileChannel），
+        // 避免 moov 在文件末尾的数百 MB ~ 数 GB MP4 出现慢速顺序 skip
+        if (src.uri.scheme == "file") {
+            val file = src.uri.path?.let { File(it) }
+            if (file != null && file.exists()) {
+                try {
+                    RandomAccessFile(file, "r").use { raf ->
+                        if (start > 0) raf.seek(start)
+                        val buf = ByteArray(1 shl 16)
+                        var remaining = length
+                        while (remaining > 0 && running.get()) {
+                            val want = minOf(buf.size.toLong(), remaining).toInt()
+                            val n = raf.read(buf, 0, want)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            remaining -= n
+                        }
+                        out.flush()
+                    }
+                    return
+                } catch (e: Throwable) {
+                    Log.d(TAG, "RandomAccessFile 发送中断: ${e.message}")
+                    return
+                }
+            }
+        }
+
+        val pfd = try {
+            context.contentResolver.openFileDescriptor(src.uri, "r")
+        } catch (_: Throwable) {
+            null
+        }
+        if (pfd != null) {
+            pfd.use { fd ->
+                FileInputStream(fd.fileDescriptor).use { fis ->
+                    if (start > 0) {
+                        val positioned = runCatching {
+                            fis.channel.position(start)
+                            true
+                        }.getOrDefault(false)
+                        if (!positioned) skipFully(fis, start)
+                    }
+                    val buf = ByteArray(1 shl 16)
+                    var remaining = length
+                    while (remaining > 0 && running.get()) {
+                        val want = minOf(buf.size.toLong(), remaining).toInt()
+                        val n = fis.read(buf, 0, want)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        remaining -= n
+                    }
+                    out.flush()
+                }
+            }
+            return
+        }
+
+        val input = try {
+            context.contentResolver.openInputStream(src.uri)
+        } catch (e: Throwable) {
+            Log.w(TAG, "打开视频失败: ${e.message}")
+            null
+        } ?: return
         input.use { stream ->
+            if (start > 0) skipFully(stream, start)
             val buf = ByteArray(1 shl 16)
             var remaining = length
             while (remaining > 0 && running.get()) {
@@ -314,57 +597,24 @@ class LanCastFileServer(private val context: Context) {
         }
     }
 
-    /**
-     * 打开文件并把读指针定位到 [offset]。
-     *
-     * 为什么不能只靠 `openInputStream` + `skipFully`：接收端读 moov 在末尾的 MP4 时会发
-     * `Range: bytes=<末尾偏移>-`，偏移量可能到 GB 级。`InputStream.skip` 在 provider 返回的
-     * 管道流上是**靠读取丢弃**实现的，跳 1.4 GB 会让接收端等到超时。
-     * 文件描述符可以真正 lseek，所以优先走它；只有它不可用时才退回 skip。
-     */
-    private fun openAt(src: Source, offset: Long): InputStream? {
-        if (offset > 0) {
-            try {
-                val pfd = context.contentResolver.openFileDescriptor(src.uri, "r")
-                if (pfd != null) {
-                    val fis = java.io.FileInputStream(pfd.fileDescriptor)
-                    try {
-                        fis.channel.position(offset)
-                    } catch (e: Throwable) {
-                        // 不可 seek（管道/FIFO）：关掉，退回下面的普通流 + skip
-                        runCatching { fis.close() }
-                        runCatching { pfd.close() }
-                        throw e
-                    }
-                    return object : java.io.FilterInputStream(fis) {
-                        override fun close() {
-                            runCatching { super.close() }
-                            runCatching { pfd.close() }
-                        }
-                    }
-                }
-            } catch (e: Throwable) {
-                Log.d(TAG, "openFileDescriptor 定位失败，退回 skip：${e.message}")
-            }
-        }
-        val stream = try {
-            context.contentResolver.openInputStream(src.uri)
-        } catch (e: Throwable) {
-            Log.w(TAG, "打开视频失败: ${e.message}")
-            null
-        } ?: return null
-        if (offset > 0) skipFully(stream, offset)
-        return stream
-    }
-
     companion object {
         private const val TAG = "LanCastFileServer"
         const val DEFAULT_PORT = 8130
-        private const val MAX_CONNECTIONS = 4
-        private const val READ_TIMEOUT_MS = 15_000
+        private const val MAX_CONNECTIONS = 24
+        private const val READ_TIMEOUT_MS = 20_000
         private const val MAX_HEADER_LINE = 8192
 
-        /** 视频在局域网里的访问地址。 */
+        fun idForUri(uri: Uri): String {
+            val md = MessageDigest.getInstance("MD5")
+            val bytes = md.digest(uri.toString().toByteArray(Charsets.UTF_8))
+            return bytes.take(8).joinToString("") { "%02x".format(it) }
+        }
+
+        /** 按条目 ID 构造视频直播地址。 */
+        fun itemUrl(base: String, id: String, name: String): String =
+            "$base/item/$id/" + URLEncoder.encode(name, "UTF-8").replace("+", "%20")
+
+        /** 旧版兼容地址格式。 */
         fun url(ip: String, port: Int, name: String): String =
             "http://$ip:$port/v/" + URLEncoder.encode(name, "UTF-8").replace("+", "%20")
 
@@ -391,7 +641,6 @@ class LanCastFileServer(private val context: Context) {
 
         /** 读取文件名/大小/MIME（支持 SAF 的 content:// 与 .nomedia 扫描出来的 file://）。 */
         fun describe(context: Context, uri: Uri): Source {
-            // file:// 走 File API：ContentResolver 对它没有 OpenableColumns（否则大小会是 -1，接收端就不能拖进度了）
             if (uri.scheme == "file") {
                 val f = uri.path?.let { java.io.File(it) }
                 if (f != null && f.exists()) {
@@ -413,39 +662,18 @@ class LanCastFileServer(private val context: Context) {
                 Log.w(TAG, "读取文件信息失败: ${e.message}")
             }
             val mime = context.contentResolver.getType(uri) ?: guessMime(name)
-            // OpenableColumns.SIZE 并非所有 provider 都返回（部分云盘/U 盘/第三方相册给空或 -1）。
-            // 拿不到大小就只能退化成「无 Range」模式，而 moov 在文件末尾的 MP4（非 faststart，
-            // 从网上下载的视频大量如此）必须靠 Range 回取尾部索引才能播 —— 会直接播放失败。
-            // 所以这里再问文件描述符要一次真实大小，它覆盖 MediaStore / SAF / file:// 的绝大多数情况。
-            if (size <= 0) {
-                size = statSize(context, uri)
-                if (size > 0) Log.i(TAG, "OpenableColumns.SIZE 不可用，改用 fd.statSize=$size（$name）")
-            }
             return Source(uri, size, name, mime)
-        }
-
-        /** 直接问文件描述符要真实大小；拿不到返回 -1。 */
-        fun statSize(context: Context, uri: Uri): Long = try {
-            context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
-        } catch (e: Throwable) {
-            Log.w(TAG, "读取文件大小失败: ${e.message}")
-            -1L
         }
 
         private fun guessMime(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
             "mp4", "m4v" -> "video/mp4"
             "mkv" -> "video/x-matroska"
             "webm" -> "video/webm"
-            "ts", "m2ts" -> "video/mp2t"
+            "ts" -> "video/mp2t"
             "mov" -> "video/quicktime"
             "avi" -> "video/x-msvideo"
             "flv" -> "video/x-flv"
             "3gp" -> "video/3gpp"
-            // 下面这些安卓平台**没有解码器**（见 README「支持的格式」）。照样给出正确的 MIME，
-            // 是为了让接收端的报错落在"格式不支持"而不是"Content-Type 不认识"上。
-            "wmv", "asf" -> "video/x-ms-wmv"
-            "mpg", "mpeg", "vob" -> "video/mpeg"
-            "rm", "rmvb" -> "application/vnd.rn-realmedia-vbr"
             else -> "application/octet-stream"
         }
     }

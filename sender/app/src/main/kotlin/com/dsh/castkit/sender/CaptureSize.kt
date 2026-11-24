@@ -4,15 +4,12 @@ package com.dsh.castkit.sender
  * 采集尺寸计算：**保持屏幕比例**，避免把非 16:9 的手机屏幕拉伸成 16:9。
  *
  * 语义（与设置页一致）：
- *  - 预设（720p/1080p/1440p）= **短边像素**，长边按屏幕长宽比推算；
+ *  - 预设（480p/720p/1080p/1440p）= **短边像素**，长边按屏幕长宽比推算；
  *  - `跟随本机` = 屏幕原始尺寸（对齐后）；
- *  - **关闭「保持屏幕比例」时**，预设按字面 16:9（兼容"必须是 1280×720"的用法，
- *    画面会被拉伸）——所以这个开关对**所有档位**都生效，不只是曾经的"自定义"。
+ *  - `自定义`：保持比例开时输入的是**短边**（长边自动），关闭时按字面 `宽×高`；
+ *  - 关闭「保持屏幕比例」时，预设按字面 16:9（兼容"必须是 1280×720"的用法，画面会被拉伸）。
  *
  * 尺寸都会做 16 对齐（H.264 编码器普遍要求），不放大超过屏幕，能力不支持时逐级回退。
- *
- * 注：`自定义` 档位已在本次重构中移除（设计系统 §10 偏差 7），因此这里不再有
- * `customW` / `customH` 两个参数。
  */
 object CaptureSize {
 
@@ -32,6 +29,8 @@ object CaptureSize {
         screenW: Int,
         screenH: Int,
         preset: ResolutionPreset,
+        customW: Int,
+        customH: Int,
         keepAspect: Boolean,
         isSupported: ((Int, Int) -> Boolean)? = null,
     ): Result {
@@ -47,13 +46,15 @@ object CaptureSize {
         var targetShort: Int
         var targetLong: Int
         if (!keepAspect) {
-            // 字面尺寸：预设按标准 16:9，跟随本机按屏幕原始尺寸
+            // 字面尺寸（旧行为）
             val w = when (preset) {
                 ResolutionPreset.NATIVE -> sw
+                ResolutionPreset.CUSTOM -> if (customW in 128..4096) customW else 1280
                 else -> preset.shortSide ?: 720
             }
             val h = when (preset) {
                 ResolutionPreset.NATIVE -> sh
+                ResolutionPreset.CUSTOM -> if (customH in 128..4096) customH else 720
                 else -> preset.landscapeHeight ?: 720
             }
             val (aw, ah) = sanitize(w, h, isSupported).also { if (it.note != null) note = it.note }
@@ -62,6 +63,7 @@ object CaptureSize {
 
         val requestedShort = when (preset) {
             ResolutionPreset.NATIVE -> shortSide
+            ResolutionPreset.CUSTOM -> if (customW in 128..4096) customW else 720
             else -> preset.shortSide ?: 720
         }
 
